@@ -105,7 +105,7 @@ function createBuildingMaterial() {
 
 // ---------------------------------------------------------------------------------------------
 
-export function buildScenery({ scene, track, terrain }) {
+export function buildScenery({ scene, track, terrain, density = 1 }) {
   const group = new THREE.Group();
   group.name = 'scenery';
   scene.add(group);
@@ -135,8 +135,7 @@ export function buildScenery({ scene, track, terrain }) {
   buildTunnel(track, group, (b) => {
     addBuildingRaw({ ...b, tint: new THREE.Color(b.tint), seed: Math.floor(rnd() * 997), groundY: b.y });
   });
-  const { isSeaSide } = buildQuaysAndSidewalks(track, group, flatZone);
-  void isSeaSide;
+  buildQuaysAndSidewalks(track, group, flatZone);
   const standBlocks = [[-182, -92], [-72, 38], [58, 160]];
   buildGrandstands(track, group, standBlocks);
   for (const [a, b] of standBlocks) {
@@ -199,8 +198,8 @@ export function buildScenery({ scene, track, terrain }) {
           const lx = side > 0 ? 1 : -1;
           const cx = b.x + Math.cos(b.yaw) * lx * (b.d / 2 + 0.25);
           const cz = b.z - Math.sin(b.yaw) * lx * (b.d / 2 + 0.25);
-          const sw = Math.min(b.w * 0.75, rr(7, 11));
-          neons.push({ x: cx, z: cz, y: b.y + Math.min(b.h - 3, rr(7, 13)), yaw: yawFace, w: sw, h: sw / 4, i: Math.floor(rnd() * NEON_COUNT) });
+          const sw = Math.min(b.w * 0.85, rr(10, 15));
+          neons.push({ x: cx, z: cz, y: b.y + Math.min(b.h - 3, rr(6, 10)), yaw: yawFace, w: sw, h: sw / 4, i: Math.floor(rnd() * NEON_COUNT) });
         }
       }
       s += w + rr(1, o.gap ?? 6);
@@ -333,7 +332,7 @@ export function buildScenery({ scene, track, terrain }) {
       g.translate(n.x, n.y, n.z);
       ng.push(g);
     }
-    const neonMat = new THREE.MeshBasicMaterial({ map: neonTexture(), color: new THREE.Color(2.2, 2.2, 2.2) });
+    const neonMat = new THREE.MeshBasicMaterial({ map: neonTexture(), color: new THREE.Color(3.2, 3.2, 3.2) });
     const neonMesh = new THREE.Mesh(mergeGeometries(ng, false), neonMat);
     neonMesh.name = 'neon-signs';
     group.add(neonMesh);
@@ -536,7 +535,7 @@ export function buildScenery({ scene, track, terrain }) {
     const slope = terrain.slopeAt(x, z);
     const sd = seaSignedDistance(x, z);
     // Kayalar: dik yamaçlar ve kıyı
-    if ((slope < 0.72 || (sd > -35 && sd < 5)) && d > 16 && rocks.length < 460 && rnd() < 0.6) {
+    if ((slope < 0.72 || (sd > -35 && sd < 5)) && d > 16 && rocks.length < 460 * density && rnd() < 0.6) {
       const rs = rr(1.5, 4.5);
       // Dik yamaçta kaya havada kalmasın: eğime göre göm
       const sink = rs * Math.min(1.1, 0.25 + (1 - slope) * 2.2);
@@ -546,9 +545,9 @@ export function buildScenery({ scene, track, terrain }) {
     if (cm > 0.35 || slope < 0.72 || d < 17) continue;
     if (overlaps(x, z, 2.5)) continue;
     const r = rnd();
-    if (r < 0.12 && cypress.length < 300) cypress.push({ x, y: g - 0.2, z, yaw: rnd() * 6.28, sx: rr(7, 10), sy: rr(11, 17), sz: rr(7, 10) });
-    else if (r < 0.24 && pines.length < 260) pines.push({ x, y: g - 0.3, z, yaw: rnd() * 6.28, sx: rr(10, 15), sy: rr(10, 15), sz: rr(10, 15) });
-    else if (bushes.length < 900) bushes.push({ x, y: g - 0.2, z, yaw: rnd() * 6.28, sx: rr(2, 5), sy: rr(1.5, 3), sz: rr(2, 5) });
+    if (r < 0.12 && cypress.length < 300 * density) cypress.push({ x, y: g - 0.2, z, yaw: rnd() * 6.28, sx: rr(7, 10), sy: rr(11, 17), sz: rr(7, 10) });
+    else if (r < 0.24 && pines.length < 260 * density) pines.push({ x, y: g - 0.3, z, yaw: rnd() * 6.28, sx: rr(10, 15), sy: rr(10, 15), sz: rr(10, 15) });
+    else if (bushes.length < 900 * density) bushes.push({ x, y: g - 0.2, z, yaw: rnd() * 6.28, sx: rr(2, 5), sy: rr(1.5, 3), sz: rr(2, 5) });
   }
   // Villaların yanına selviler
   for (const v of villas) {

@@ -11,8 +11,11 @@ const SUN_ELEVATION = THREE.MathUtils.degToRad(4.2);
 const LIGHT_ELEVATION = THREE.MathUtils.degToRad(27);
 const FOG_COLOR = 0xd9988c;
 const FOG_DENSITY = 0.00042;
-const SHADOW_HALF = 105;
-const SHADOW_MAP = 2048;
+// Telefon/tablette daha hafif ayarlar (gölge haritası ve bitki yoğunluğu)
+const LOW_SPEC = typeof navigator !== 'undefined'
+  && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1);
+const SHADOW_HALF = LOW_SPEC ? 90 : 105;
+const SHADOW_MAP = LOW_SPEC ? 1024 : 2048;
 
 function dirFrom(az, elev) {
   return new THREE.Vector3(az.x * Math.cos(elev), Math.sin(elev), az.y * Math.cos(elev)).normalize();
@@ -68,7 +71,7 @@ export class Environment {
     scene.add(this.sea);
 
     // Mekân
-    this.scenery = buildScenery({ scene, track, terrain: this.terrain, sunDir: this.sunDir, renderer });
+    this.scenery = buildScenery({ scene, track, terrain: this.terrain, density: LOW_SPEC ? 0.55 : 1 });
   }
 
   bakeSky(fogColor) {
@@ -94,6 +97,26 @@ export class Environment {
     this.scene.environment = rt.texture;
     this.envTarget = rt;
     envMat.dispose();
+
+    // Tünel içi ortam haritası: koyu oda + tavanda turuncu ışık şeritleri (araba boyasında yansıyan
+    // şeritler). Oyuncu tüneldeyken scene.environment buna geçer (aynı boyut → yeniden derleme yok).
+    const tScene = new THREE.Scene();
+    tScene.background = new THREE.Color(0x120c08);
+    const room = new THREE.Mesh(new THREE.BoxGeometry(26, 9, 80), new THREE.MeshBasicMaterial({ color: 0x3a2618, side: THREE.BackSide }));
+    room.position.y = 3.2;
+    tScene.add(room);
+    const stripMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(5, 2.0, 0.45) });
+    for (const x of [-4.2, 4.2]) {
+      for (let z = -36; z < 36; z += 4) {
+        const strip = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.1, 2.6), stripMat);
+        strip.position.set(x, 7.5, z);
+        tScene.add(strip);
+      }
+    }
+    this.tunnelEnvTarget = pmrem.fromScene(tScene, 0, 0.1, 100);
+    tScene.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
+    room.material.dispose();
+    stripMat.dispose();
     pmrem.dispose();
   }
 
@@ -142,6 +165,8 @@ export class Environment {
     this.hemi.intensity = this.hemiBase.intensity * (1 - k * 0.55);
     this.hemi.color.copy(this.hemiBase.sky).lerp(TUNNEL_TINT, k * 0.8);
     this.hemi.groundColor.copy(this.hemiBase.ground).lerp(TUNNEL_TINT, k * 0.6);
+    const env = k > 0.5 ? this.tunnelEnvTarget.texture : this.envTarget.texture;
+    if (this.scene.environment !== env) this.scene.environment = env;
 
     if (this.scenery) this.scenery.update(dt, this.time, focusPos);
   }

@@ -134,10 +134,11 @@ export function buildTunnel(track, group, buildingSink) {
   const stoneMap = stoneTexture();
   const outerGeo = outer.build();
   const portals = [];
-  for (const [s, dir] of [[t0, -1], [t1 + 2, 1]]) {
+  for (const s of [t0, t1 + 2]) {
     const f = frameAt(track, s);
     const shape = new THREE.Shape();
-    const pts = [[-28, -4], [-13.2, -4], [-13.2, 6.3], [-11.3, 8.6], [11.3, 8.6], [13.2, 6.3], [13.2, -4], [28, -4], [28, 13.5], [16, 15.5], [-16, 15.5], [-28, 13.5]];
+    // Açıklık eğimli kenar (bevel 0.4) sonrası da ±13 m'nin dışında kalsın
+    const pts = [[-28, -4], [-13.6, -4], [-13.6, 6.3], [-11.6, 8.8], [11.6, 8.8], [13.6, 6.3], [13.6, -4], [28, -4], [28, 13.5], [16, 15.5], [-16, 15.5], [-28, 13.5]];
     shape.moveTo(pts[0][0], pts[0][1]);
     for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], pts[i][1]);
     shape.closePath();
@@ -150,7 +151,6 @@ export function buildTunnel(track, group, buildingSink) {
     m.setPosition(f.x, f.y, f.z);
     g.applyMatrix4(m);
     portals.push(g);
-    void dir;
   }
   const outerAll = mergeGeometries([stripTo(outerGeo), ...portals.map(stripTo)], false);
   const outerMesh = new THREE.Mesh(outerAll, new THREE.MeshLambertMaterial({ map: stoneMap, color: 0xe8d8c0 }));
@@ -464,7 +464,7 @@ export function buildGantry(track, group, s = 0) {
   add(new THREE.BoxGeometry(31.2, 0.3, 1.7), red, 0, 8.25);
   add(new THREE.BoxGeometry(31.2, 0.3, 1.7), red, 0, 10.95);
   // Işık kutuları (beş çift)
-  for (let i = 0; i < 5; i++) add(new THREE.BoxGeometry(1.5, 1.1, 0.7), 0x15171b, -6 + i * 3, 7.5);
+  for (let i = 0; i < 5; i++) add(new THREE.BoxGeometry(1.5, 1.0, 0.7), 0x15171b, -6 + i * 3, 7.75);
   const geo = mergeGeometries(parts.map(clean), false);
   // Yerel: x = sağ, y = yukarı, z = -teğet (sağ elli taban); yüz -z = gelen araçlara bakar
   const m = new THREE.Matrix4().makeBasis(new THREE.Vector3(f.rx, 0, f.rz), Y, new THREE.Vector3(-f.tx, 0, -f.tz));
@@ -501,7 +501,7 @@ export function buildGantry(track, group, s = 0) {
       for (const face of [1, -1]) {
         const g = new THREE.CircleGeometry(0.26, 12);
         if (face < 0) g.rotateY(Math.PI);
-        g.translate(-6 + i * 3 + dx, 7.5, face * 0.37);
+        g.translate(-6 + i * 3 + dx, 7.75, face * 0.37);
         bulbs.push(g);
       }
     }

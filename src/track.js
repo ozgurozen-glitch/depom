@@ -173,18 +173,31 @@ export class Track {
       const d = qx * qx + qz * qz;
       if (d < bestD) { bestD = d; bestS = (a + t) * this.ds; }
     }
-    const s = this.wrap(bestS);
-    // Yanal: s'deki ara değerlenmiş sağ vektöre göre
-    this._locate(s);
-    const i = this._i;
-    const j = this._j;
-    const f = this._f;
-    const cx = this.px[i] + (this.px[j] - this.px[i]) * f;
-    const cz = this.pz[i] + (this.pz[j] - this.pz[i]) * f;
-    let rx = this.rx[i] + (this.rx[j] - this.rx[i]) * f;
-    let rz = this.rz[i] + (this.rz[j] - this.rz[i]) * f;
-    const rl = Math.hypot(rx, rz) || 1;
-    rx /= rl; rz /= rl;
+    // İnceltme: sample(s)'in kesit çizgisi (ara değerlenmiş sağ vektör) noktadan geçecek şekilde
+    // s'yi düzelt (virajda dış kenarda parça izdüşümü ~0.2 m sapabiliyor). 2 Newton adımı yeter.
+    let s = this.wrap(bestS);
+    let cx = 0;
+    let cz = 0;
+    let rx = 0;
+    let rz = 0;
+    for (let it = 0; it < 3; it++) {
+      this._locate(s);
+      const i = this._i;
+      const j = this._j;
+      const f = this._f;
+      cx = this.px[i] + (this.px[j] - this.px[i]) * f;
+      cz = this.pz[i] + (this.pz[j] - this.pz[i]) * f;
+      rx = this.rx[i] + (this.rx[j] - this.rx[i]) * f;
+      rz = this.rz[i] + (this.rz[j] - this.rz[i]) * f;
+      const rl = Math.hypot(rx, rz) || 1;
+      rx /= rl; rz /= rl;
+      if (it === 2) break;
+      // yatay teğet = (rz, -rx) (sağ = (-tz, tx))
+      let d = (x - cx) * rz - (z - cz) * rx;
+      d = d > 1.5 ? 1.5 : d < -1.5 ? -1.5 : d;
+      if (Math.abs(d) < 1e-4) break;
+      s = this.wrap(s + d);
+    }
     const lateral = (x - cx) * rx + (z - cz) * rz;
     return {
       s,
@@ -271,7 +284,7 @@ export class Track {
 
   /** Mekân yerleşimi için: merkez çizgisine yatay uzaklık. */
   distanceToCenterline(x, z) {
-    const i = this._globalNearest(x, z);
+    this._globalNearest(x, z);
     return Math.sqrt(this._bestD2);
   }
 
@@ -652,14 +665,12 @@ export class Track {
     };
     // Dama deseni: enine 16 kare (20 m), boyuna 2 sıra (2.5 m) — dokunun sol yarısı (u 0..0.5).
     quad(-1.25, 1.25, -half, half, 0, 0.5, 1, 1 - 2 / 16);
-    // Grid kutuları
-    const grid = this.getStartGrid(8);
+    // Grid kutuları (getStartGrid ile aynı yerleşim)
     for (let i = 0; i < 8; i++) {
       const s = -(9 + i * 4.5) + 3.2;
       const lat = i % 2 === 0 ? -4.5 : 4.5;
       quad(s - 2.6, s, lat - 1.6, lat + 1.6, 0.5, 1, 0.5, 1);
     }
-    void grid;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
