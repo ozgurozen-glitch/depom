@@ -189,7 +189,6 @@ export class Controls {
     const step = rate * dt;
     if (digital > cur) this.steer = Math.min(digital, cur + step);
     else if (digital < cur) this.steer = Math.max(digital, cur - step);
-    if (dt === 0 && digital !== 0 && cur === 0) this.steer = digital * 0.2;
 
     let steer = this.steer;
     if (this.pad.active && this.pad.steer !== 0 && digital === 0) steer = this.pad.steer;
@@ -203,7 +202,7 @@ export class Controls {
     out.steer = Math.max(-1, Math.min(1, steer));
     out.nitro = nitro;
     out.drift = brake;
-    return { throttle: out.throttle, brake: out.brake, steer: out.steer, nitro: out.nitro, drift: out.drift };
+    return out; // her çağrıda aynı nesne (çağıran hemen okur; saklamak isterse kopyalamalı)
   }
 
   consumePause() {

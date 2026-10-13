@@ -83,7 +83,6 @@ function place(car, s, lat, kmh) {
   if (kmh) car.applyImpulse(new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw)).multiplyScalar(kmh / 3.6));
 }
 
-const bS = track.segB[0];
 const SCEN = {
   drive: { s: track.length - 30, lat: 4, kmh: 0 },
   jump: { s: 330, lat: 0, kmh: 280 },
@@ -92,11 +91,18 @@ const SCEN = {
   crest: { s: 20, lat: 0, kmh: 300 },
   wall: { s: 480, lat: 5, kmh: 230, yaw: -0.18 },
   tunnel: { s: track.tunnel.s0 - 60, lat: 0, kmh: 260 },
+  drift: { s: track.turn2[0] - 25, lat: 3, kmh: 210 },
+  wreck: { s: 480, lat: 0, kmh: 230, yaw: -1.0 },
   showroom: { s: 60, lat: 0, kmh: 0 },
 };
 const sc0 = SCEN[scenario] || SCEN.drive;
 place(player, num('s', sc0.s), num('lat', sc0.lat), num('kmh', sc0.kmh));
-if (sc0.yaw) player.yaw += sc0.yaw;
+if (sc0.yaw) {
+  player.yaw += sc0.yaw;
+  const sp = player.speed;
+  player.velocity.set(Math.sin(player.yaw) * sp, 0, Math.cos(player.yaw) * sp);
+  player.speed = sp;
+}
 player.nitro = num('nitro', 0.5);
 if (scenario === 'drive') {
   const grid = track.getStartGrid(cars.length);
@@ -136,6 +142,9 @@ function playerInput(t) {
     const ds = player.trackS - r.s0;
     if (ds > r.s1 - r.s0 - 26 && ds < r.s1 - r.s0 + 3) return { throttle: 0, brake: 1, steer: 1, nitro: false, drift: true };
     return { throttle: 1, brake: 0, steer: 0, nitro: false, drift: false };
+  }
+  if (scenario === 'drift') {
+    return t > 0.3 ? { throttle: 0, brake: 1, steer: 1, nitro: t > 0.8 && t < 0.85, drift: true } : { throttle: 1, brake: 0, steer: 0, nitro: false, drift: false };
   }
   if (autopilot) return botInput(player, 1, t);
   return controls.getInput();

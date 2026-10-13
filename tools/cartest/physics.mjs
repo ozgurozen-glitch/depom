@@ -195,7 +195,7 @@ console.log('\n# Drift');
   check('fren + direksiyon + hız → drift_start', types(ev).includes('drift_start') && car.drifting);
   let maxAng = 0;
   const v0 = car.speedKmh;
-  const ev2 = run(car, tr, 2, (t, c) => { maxAng = Math.max(maxAng, c.driftAngle); return input({ throttle: 0, brake: 1, drift: true, steer: 1 }); });
+  run(car, tr, 2, (t, c) => { maxAng = Math.max(maxAng, c.driftAngle); return input({ throttle: 0, brake: 1, drift: true, steer: 1 }); });
   const dAng = maxAng * 180 / Math.PI;
   check('drift açısı 25-45°', dAng > 30 && dAng <= 46, `${dAng.toFixed(1)}°`);
   check('drift hızı az düşürür', car.speedKmh > v0 - 35, `${v0.toFixed(0)}→${car.speedKmh.toFixed(0)} km/s`);

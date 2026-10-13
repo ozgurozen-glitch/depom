@@ -40,7 +40,6 @@ const wrapAngle = (a) => {
   else if (a < -Math.PI) a += Math.PI * 2;
   return a;
 };
-const easeInOut = (t) => t * t * (3 - 2 * t);
 const easeInOutCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - ((-2 * t + 2) ** 3) / 2);
 
 export class ChaseCamera {
@@ -75,6 +74,8 @@ export class ChaseCamera {
     this.wreckPos = new THREE.Vector3();
     this.wreckVel = new THREE.Vector3();
     this.wreckLook = new THREE.Vector3();
+
+    this.posValid = false;
 
     // Sarsıntı
     this.trauma = 0;
@@ -159,7 +160,6 @@ export class ChaseCamera {
     this.offset.copy(_desiredOff);
     this.lookOffset.copy(_desiredLook);
 
-    const cam = this.camera;
     const pos = _v1.copy(_carPos).add(this.offset);
     this.constrainToTrack(pos, car, track);
     const look = _v2.copy(_carPos).add(this.lookOffset);
@@ -246,7 +246,12 @@ export class ChaseCamera {
   updateWreck(dt, car, track) {
     if (!this.wreckActive) {
       this.wreckActive = true;
-      this.wreckPos.copy(this.camera.position);
+      if (this.posValid) {
+        this.wreckPos.copy(this.camera.position);
+      } else {
+        // Kamera henüz yerleşmemişse arabanın arkasından başla.
+        this.wreckPos.set(-Math.sin(car.yaw) * RACE.distance, RACE.height, -Math.cos(car.yaw) * RACE.distance).add(_carPos);
+      }
       // Kamera bir süre arabanın momentumuyla kayar, sonra durur.
       this.wreckVel.copy(car.velocity).multiplyScalar(0.55);
       this.wreckVel.y = 0;
@@ -327,6 +332,7 @@ export class ChaseCamera {
       pos.z += Math.sin(t * 23.3 + 0.7) * amp * 0.4;
     }
     cam.position.copy(pos);
+    this.posValid = true;
     cam.up.set(0, 1, 0);
     cam.lookAt(look);
     const shakeRoll = tr * Math.sin(t * 19.7 + 0.4) * 0.035;
