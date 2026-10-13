@@ -449,26 +449,26 @@
   text-shadow: 0 0 8px rgba(0, 229, 255, 0.75), 0 2px 0 rgba(0, 0, 0, 0.5);
 }
 
-.nr-note.nr-gold .nr-note-main {
+.nr-note.nr-tone-gold .nr-note-main {
   background-image: linear-gradient(180deg, #fffbe0 0%, #ffd400 48%, #ff8a00 100%);
   filter: drop-shadow(0 0 12px rgba(255, 170, 0, 0.65)) drop-shadow(0 3px 0 rgba(0, 0, 0, 0.5));
 }
 
-.nr-note.nr-gold .nr-note-sub {
+.nr-note.nr-tone-gold .nr-note-sub {
   text-shadow: 0 0 8px rgba(255, 170, 0, 0.8), 0 2px 0 rgba(0, 0, 0, 0.5);
 }
 
-.nr-note.nr-red .nr-note-main {
+.nr-note.nr-tone-red .nr-note-main {
   background-image: linear-gradient(180deg, #ffe0e4 0%, #ff4d63 50%, #c4001f 100%);
   filter: drop-shadow(0 0 12px rgba(255, 30, 60, 0.7)) drop-shadow(0 3px 0 rgba(0, 0, 0, 0.5));
 }
 
-.nr-note.nr-nitro .nr-note-main {
+.nr-note.nr-tone-nitro .nr-note-main {
   background-image: linear-gradient(180deg, #ffffff 0%, #8fd8ff 40%, #6a7cff 75%, #a84dff 100%);
   filter: drop-shadow(0 0 14px rgba(110, 110, 255, 0.75)) drop-shadow(0 3px 0 rgba(0, 0, 0, 0.5));
 }
 
-.nr-note.nr-white .nr-note-main {
+.nr-note.nr-tone-white .nr-note-main {
   background-image: linear-gradient(180deg, #ffffff 0%, #e8f6ff 60%, #a9d8ee 100%);
   filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.45)) drop-shadow(0 3px 0 rgba(0, 0, 0, 0.5));
 }

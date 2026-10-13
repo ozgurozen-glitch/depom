@@ -653,7 +653,7 @@ export class HUD {
   }
 
   showNote(item, now) {
-    const node = el('div', `nr-note nr-${item.tone}${item.small ? ' nr-small' : ''}`);
+    const node = el('div', `nr-note nr-tone-${item.tone}${item.small ? ' nr-small' : ''}`);
     const main = el('div', 'nr-note-main', item.count > 1 ? `${item.text} x${item.count}` : item.text);
     main.style.textTransform = 'none';
     main.lang = 'en';

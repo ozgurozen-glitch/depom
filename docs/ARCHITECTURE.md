@@ -34,7 +34,8 @@ tools/shot.mjs        Playwright ile ekran görüntüsü + durum çıktısı (te
 - Modüller birbirinin dosyasını düzenlemez; sözleşmede eksik gördüğünü raporda belirt.
 - Harici ağ yok: CDN, Google Fonts, uzak doku yok. Dokular gerekiyorsa `CanvasTexture` ile üret.
 - `window.__game` test için açıktır; `?autopilot=1` oyuncu arabasını bot sürer, `?skipmenu=1` menüyü atlar,
-  `?speed=N` simülasyonu N kat hızlandırır (yalnızca test).
+  `?speed=N` simülasyonu N kat hızlandırır, `?fxq=low|medium|high` efekt kalitesini sabitler (yalnızca test).
+  Headless Chromium'da yazılımsal çizim yavaş olduğundan testlerde `fxq=low&speed=6` önerilir.
 
 ## Olay (event) sistemi
 
@@ -84,8 +85,9 @@ export class Track {
   width: number             // yol genişliği (m), ~18-22
   ramps: Array<{ s0, s1, height, latMin, latMax, type: 'jump' | 'roll' }>
   pickups: Array<{ s, lateral, kind: 'nitro', mesh: Object3D, active: bool, respawnAt: number }>
-  sample(s) → { pos: Vector3, tangent: Vector3, right: Vector3, up: Vector3, width: number }
+  sample(s, out?) → { pos: Vector3, tangent: Vector3, right: Vector3, up: Vector3, width: number }
                              // s metre; length'e göre sarar (wrap). pos yol yüzeyindeki merkez noktası.
+                             // out verilirse içine yazar (sıcak döngülerde nesne üretmemek için).
   project(pos, hintS?) → { s, lateral, height, onRoad }
                              // hintS verilirse ±60 m'de arar (hızlı). height = pos.y - yol yüzeyi.
   heightAt(s, lateral) → number   // rampalar dahil yol yüzeyi Y'si
@@ -132,6 +134,7 @@ export class Car {
   getRearWheelPositions() → [Vector3, Vector3]   // dünya koordinatı, yol temas noktaları
   getExhaustPositions() → [Vector3, Vector3]
   radius: number             // çarpışma yarıçapı (~2.2), halfLength, halfWidth
+  // İsteğe bağlı bilgi alanları (AI/kamera/efekt kullanır): maxSpeed, yawRate, driftAngle, driftDir, airTime
 }
 ```
 

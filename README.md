@@ -31,6 +31,8 @@ Nitro patlamasının sonuna doğru tekrar basarsan **perfect nitro** zinciri ba�
 ## Geliştirme
 
 - Modüller ve aralarındaki sözleşme: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-- Test/ekran görüntüsü: `node tools/shot.mjs --query "skipmenu=1&autopilot=1&speed=2" --wait 8 --shots 3`
+- Test/ekran görüntüsü: `node tools/shot.mjs --query "skipmenu=1&autopilot=1&speed=6&fxq=low" --wait 20 --shots 3 --interval 15`
   (Playwright ve Chromium gerekir; görüntüler `tools/out/` altına yazılır)
-- Hata ayıklama parametreleri: `?skipmenu=1`, `?autopilot=1`, `?speed=N`, `?mute=1`
+- Hata ayıklama parametreleri: `?skipmenu=1`, `?autopilot=1`, `?speed=N`, `?mute=1`, `?fxq=low|medium|high`
+- Diğer araçlar: `tools/trackview.mjs` (pistten sabit kamera görüntüleri), `tools/cartest/` (araba fiziği testleri:
+  `node --import ./tools/cartest/register.mjs tools/cartest/physics.mjs`)

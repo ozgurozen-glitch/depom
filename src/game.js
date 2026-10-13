@@ -24,7 +24,7 @@ export class Game {
     this.options = options;
 
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 5000);
+    this.camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.3, 5000);
 
     this.track = new Track(this.scene);
     this.environment = new Environment(this.scene, renderer, this.track);
