@@ -7,6 +7,7 @@
 //   node tools/trackview.mjs --top                 kuşbakışı (tüm pist)
 //   node tools/trackview.mjs --free "x,y,z,tx,ty,tz[,fov]"; ...
 //   --prefix view --size 1280x720 --wait 4 --out tools/out --hud (HUD'u gizleme)
+//   --pre "<js>"                       görüntülerden önce sayfada çalıştırılır
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -69,6 +70,8 @@ async function main() {
     if (!hud) document.getElementById('hud').style.display = 'none';
   }, opt.hud);
 
+  if (opt.pre) await page.evaluate((code) => (0, eval)(code), opt.pre);
+
   const views = [];
   if (opt.top) views.push({ name: 'top', top: true });
   for (const s of opt.s.split(',').filter(Boolean)) views.push({ name: `s${s}`, s: Number(s) });
@@ -80,6 +83,9 @@ async function main() {
       const cam = g.camera;
       const tr = g.track;
       cam.fov = 65;
+      if (window.__savedFog === undefined) window.__savedFog = g.scene.fog;
+      g.scene.fog = v.top ? null : window.__savedFog;
+      cam.near = v.top ? 20 : 0.1;
       if (v.top) {
         const b = tr.bounds;
         const cx = opt.topCenter ? Number(opt.topCenter.split(',')[0]) : (b.minX + b.maxX) / 2;
@@ -115,10 +121,14 @@ async function main() {
     const file = path.join(opt.out, `${opt.prefix}-${v.name}.png`);
     await page.screenshot({ path: file });
     const stats = await page.evaluate(() => {
-      const r = window.__game.renderer.info.render;
-      return { calls: r.calls, triangles: r.triangles, fps: Math.round(window.__game.fps) };
+      const g = window.__game;
+      const t = performance.now();
+      g.effects.render();
+      const ms = performance.now() - t;
+      const r = g.renderer.info.render;
+      return { calls: r.calls, triangles: r.triangles, fps: Math.round(g.fps), ms: Math.round(ms) };
     });
-    console.log(`${file}  cam=${info.pos} ${info.section}  calls=${stats.calls} tris=${stats.triangles} fps=${stats.fps}`);
+    console.log(`${file}  cam=${info.pos} ${info.section}  calls=${stats.calls} tris=${stats.triangles} fps=${stats.fps} renderMs=${stats.ms}`);
   }
 
   await browser.close();

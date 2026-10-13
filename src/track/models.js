@@ -35,8 +35,8 @@ export function palmGeometry() {
   const rnd = mulberry32(31);
   const H = 9;
   const bend = 1.1;
-  const segs = 8;
-  const radial = 7;
+  const segs = 5;
+  const radial = 6;
   const pos = [];
   const col = [];
   const idx = [];
@@ -74,7 +74,7 @@ export function palmGeometry() {
   const leafA = new THREE.Color(0x3f7a2a);
   const leafB = new THREE.Color(0x6aa83a);
   const leafTip = new THREE.Color(0x9a9a40);
-  const N = 12;
+  const N = 10;
   for (let f = 0; f < N; f++) {
     const az = (f / N) * Math.PI * 2 + rnd() * 0.3;
     const len = 4.2 + rnd() * 1.4;
@@ -83,7 +83,7 @@ export function palmGeometry() {
     const fp = [];
     const fc = [];
     const fi = [];
-    const steps = 7;
+    const steps = 5;
     const dir = new THREE.Vector3(Math.cos(az), 0, Math.sin(az));
     const side = new THREE.Vector3(-dir.z, 0, dir.x);
     for (let i = 0; i <= steps; i++) {
@@ -199,7 +199,7 @@ export function sailboatGeometry() {
 
 /** Selvi ağacı (ince uzun). Yükseklik ~1 → ölçeklenir. */
 export function cypressGeometry() {
-  const g = new THREE.CylinderGeometry(0.0, 0.16, 1, 7, 6);
+  const g = new THREE.CylinderGeometry(0.0, 0.16, 1, 6, 4, true);
   const p = g.attributes.position;
   const rnd = mulberry32(3);
   for (let i = 0; i < p.count; i++) {
@@ -211,9 +211,7 @@ export function cypressGeometry() {
   }
   g.computeVertexNormals();
   colorize(g, 0x2f4a26);
-  const trunk = colorize(new THREE.CylinderGeometry(0.015, 0.02, 0.08, 5), 0x4a3828);
-  trunk.translate(0, 0.04, 0);
-  return merge([g, trunk]);
+  return clean(g);
 }
 
 /** Fıstık çamı (şemsiye çamı). Yükseklik ~1. */
@@ -250,17 +248,16 @@ export function bushGeometry() {
 
 /** Kaya. */
 export function rockGeometry() {
-  const g = new THREE.DodecahedronGeometry(0.5, 1);
+  const g = new THREE.DodecahedronGeometry(0.5, 0);
   const p = g.attributes.position;
   const rnd = mulberry32(23);
   for (let i = 0; i < p.count; i++) {
     const k = 0.8 + rnd() * 0.4;
     p.setXYZ(i, p.getX(i) * k, p.getY(i) * k * 0.75, p.getZ(i) * k);
   }
-  const ng = g.toNonIndexed();
-  ng.computeVertexNormals();
-  colorize(ng, 0x9a8470);
-  return clean(ng);
+  g.computeVertexNormals();
+  colorize(g, 0x9a8470);
+  return clean(g);
 }
 
 /** Deniz feneri (beyaz kule, kırmızı tepe). */

@@ -348,7 +348,7 @@ export class Track {
     // Doku boyu: pist uzunluğunu tam bölsün (s=0'da dikiş olmasın)
     const tile = this.length / Math.round(this.length / 24);
     this.roadTile = tile;
-    const lats = [-half, -half / 2, 0, half / 2, half];
+    const lats = [-half, 0, half];
     const cols = lats.length;
     const pos = new Float32Array((N + 1) * cols * 3);
     const uv = new Float32Array((N + 1) * cols * 2);
@@ -371,8 +371,9 @@ export class Track {
     }
     const geo = stripGeometry(pos, uv, col, N + 1, cols);
     const map = asphaltTexture({ widthM: this.width, lengthM: 24 });
-    const mat = new THREE.MeshStandardMaterial({
-      map, vertexColors: true, roughness: 0.74, metalness: 0.0, envMapIntensity: 0.6,
+    // Phong: güneşe doğru hafif asfalt parlaması, IBL'siz (geniş ekran alanı → ucuz parça shader'ı)
+    const mat = new THREE.MeshPhongMaterial({
+      map, vertexColors: true, specular: 0x3a3430, shininess: 18,
     });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow = true;
@@ -455,8 +456,8 @@ export class Track {
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
     geo.setIndex(indices);
     geo.computeVertexNormals();
-    const mat = new THREE.MeshStandardMaterial({
-      map: curbTexture(), roughness: 0.6, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    const mat = new THREE.MeshLambertMaterial({
+      map: curbTexture(), polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
     });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow = true;
@@ -490,7 +491,10 @@ export class Track {
       // geçişinde iki kesit üst üste gelir.
       let prevRow = -1;
       let prevBase = -1;
-      for (let k = 0; k <= N; k++) {
+      const ks = [];
+      for (let k = 0; k < N; k += 2) ks.push(k);
+      ks.push(N);
+      for (const k of ks) {
         const i = k % N;
         const s = k * this.ds;
         const row = this.barrierRow(s);
@@ -503,7 +507,7 @@ export class Track {
             positions.push(this.px[i] + this.rx[i] * lat, this.py[i] + h, this.pz[i] + this.rz[i] * lat);
             // Satırın içinde v: kenarlardan biraz içeride (mipmap taşmasına karşı)
             const vv = 1 - (r * rowH + (0.02 + v * 0.96) * rowH);
-            uvs.push(s / 16, vv);
+            uvs.push((side > 0 ? s : -s) / 16, vv); // sol yanda yazı ayna olmasın
             colors.push(tint.r, tint.g, tint.b);
             vCount++;
           }
@@ -529,7 +533,7 @@ export class Track {
     geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     geo.setIndex(indices);
     geo.computeVertexNormals();
-    const mat = new THREE.MeshStandardMaterial({ map: barrierTexture(), vertexColors: true, roughness: 0.78 });
+    const mat = new THREE.MeshLambertMaterial({ map: barrierTexture(), vertexColors: true });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
@@ -661,8 +665,8 @@ export class Track {
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
     geo.setIndex(indices);
     geo.computeVertexNormals();
-    const mat = new THREE.MeshStandardMaterial({
-      map: startDecalTexture(), transparent: true, roughness: 0.6, depthWrite: false,
+    const mat = new THREE.MeshLambertMaterial({
+      map: startDecalTexture(), transparent: true, depthWrite: false,
       polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
     });
     const mesh = new THREE.Mesh(geo, mat);

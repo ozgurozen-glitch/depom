@@ -110,9 +110,9 @@ export function buildTunnel(track, group, buildingSink) {
   // Duvar karoları her iki tarafta alttan başlasın: profili sol ve sağ duvar için ayrı süpür
   const left = [[-13, -0.4, 0], [-13, 6.2, 6.6 / 4], [-11.2, 8.4, (6.6 + 2.84) / 4], [0, 8.4, (6.6 + 2.84 + 11.2) / 4]];
   const right = [[0, 8.4, (6.6 + 2.84 + 11.2) / 4], [11.2, 8.4, (6.6 + 2.84) / 4], [13, 6.2, 6.6 / 4], [13, -0.4, 0]];
-  sweep(inner, track, t0, t1, 4, left, { flip: true, uScale: 0.25 });
-  sweep(inner, track, t0, t1, 4, right, { flip: true, uScale: 0.25 });
-  const innerMat = new THREE.MeshStandardMaterial({ map: tunnelTileTexture(), roughness: 0.55, color: 0xd8c8b0 });
+  sweep(inner, track, t0, t1, 4, left, { flip: false, uScale: 0.25 });
+  sweep(inner, track, t0, t1, 4, right, { flip: false, uScale: 0.25 });
+  const innerMat = new THREE.MeshLambertMaterial({ map: tunnelTileTexture(), color: 0xd8c8b0 });
   // Karo dokusu: v=0 alt (koyu bant dokunun altında)
   innerMat.map.wrapT = THREE.RepeatWrapping;
   const innerMesh = new THREE.Mesh(inner.build(), innerMat);
@@ -123,7 +123,7 @@ export function buildTunnel(track, group, buildingSink) {
   // Dış kabuk (taş) + portallar
   const outer = new GeoWriter();
   const P_OUT = [[-14.6, -1.5], [-14.6, 10.6], [14.6, 10.6], [14.6, -1.5]];
-  sweep(outer, track, t0 - 2, t1 + 2, 4, P_OUT, { flip: false, uScale: 0.25 });
+  sweep(outer, track, t0 - 2, t1 + 2, 4, P_OUT, { flip: true, uScale: 0.25 });
   const stoneMap = stoneTexture();
   const outerGeo = outer.build();
   const portals = [];
@@ -146,7 +146,7 @@ export function buildTunnel(track, group, buildingSink) {
     void dir;
   }
   const outerAll = mergeGeometries([stripTo(outerGeo), ...portals.map(stripTo)], false);
-  const outerMesh = new THREE.Mesh(outerAll, new THREE.MeshStandardMaterial({ map: stoneMap, roughness: 0.85, color: 0xe8d8c0 }));
+  const outerMesh = new THREE.Mesh(outerAll, new THREE.MeshLambertMaterial({ map: stoneMap, color: 0xe8d8c0 }));
   outerMesh.castShadow = true;
   outerMesh.receiveShadow = true;
   outerMesh.name = 'tunnel-shell';
@@ -304,11 +304,11 @@ export function buildQuaysAndSidewalks(track, group, flatZoneFn) {
       }
     }
   }
-  const quayMesh = new THREE.Mesh(quay.build(), new THREE.MeshStandardMaterial({ map: stoneTexture(), roughness: 0.85, color: 0xf0e2cc }));
+  const quayMesh = new THREE.Mesh(quay.build(), new THREE.MeshLambertMaterial({ map: stoneTexture(), color: 0xf0e2cc }));
   quayMesh.receiveShadow = true;
   quayMesh.name = 'quay';
   group.add(quayMesh);
-  const walkMesh = new THREE.Mesh(walk.build(), new THREE.MeshStandardMaterial({ map: paverTexture(), roughness: 0.82 }));
+  const walkMesh = new THREE.Mesh(walk.build(), new THREE.MeshLambertMaterial({ map: paverTexture() }));
   walkMesh.receiveShadow = true;
   walkMesh.name = 'sidewalks';
   group.add(walkMesh);
@@ -368,14 +368,14 @@ export function buildGrandstands(track, group, blocks) {
       const B = rowsT[k + 1];
       for (let c = 0; c < A.length - 1; c++) {
         // sol tarafta (lateral negatif): yolun tersine doğru ilerleyen profil
-        tiers.tri(A[c], A[c + 1], B[c]);
-        tiers.tri(A[c + 1], B[c + 1], B[c]);
+        tiers.tri(A[c], B[c], A[c + 1]);
+        tiers.tri(A[c + 1], B[c], B[c + 1]);
       }
       const SA = rowsS[k];
       const SB = rowsS[k + 1];
       for (let c = 0; c < SA.length - 1; c++) {
-        struct.tri(SA[c], SA[c + 1], SB[c]);
-        struct.tri(SA[c + 1], SB[c + 1], SB[c]);
+        struct.tri(SA[c], SB[c], SA[c + 1]);
+        struct.tri(SA[c + 1], SB[c], SB[c + 1]);
       }
     }
     // Çatı üçgenleri (iki yüzlü malzeme)
@@ -396,12 +396,12 @@ export function buildGrandstands(track, group, blocks) {
       if (s === s0) { struct.tri(ids[0], ids[1], ids[2]); struct.tri(ids[0], ids[2], ids[3]); } else { struct.tri(ids[0], ids[2], ids[1]); struct.tri(ids[0], ids[3], ids[2]); }
     }
   }
-  const tierMesh = new THREE.Mesh(tiers.build(), new THREE.MeshStandardMaterial({ map: crowdTexture(), roughness: 0.9, side: THREE.DoubleSide }));
+  const tierMesh = new THREE.Mesh(tiers.build(), new THREE.MeshLambertMaterial({ map: crowdTexture(), side: THREE.DoubleSide }));
   tierMesh.receiveShadow = true;
   tierMesh.castShadow = true;
   tierMesh.name = 'grandstand-crowd';
   group.add(tierMesh);
-  const structMesh = new THREE.Mesh(struct.build(), new THREE.MeshStandardMaterial({ color: 0xe9e4dc, roughness: 0.8, side: THREE.DoubleSide }));
+  const structMesh = new THREE.Mesh(struct.build(), new THREE.MeshLambertMaterial({ color: 0xe9e4dc, side: THREE.DoubleSide }));
   structMesh.receiveShadow = true;
   structMesh.castShadow = true;
   structMesh.name = 'grandstand-structure';
@@ -415,7 +415,7 @@ export function buildGrandstands(track, group, blocks) {
   const roofTex = new THREE.CanvasTexture(roofCanvas);
   roofTex.colorSpace = THREE.SRGBColorSpace;
   roofTex.wrapS = THREE.RepeatWrapping;
-  const roofMesh = new THREE.Mesh(roof.build(), new THREE.MeshStandardMaterial({ map: roofTex, roughness: 0.5, metalness: 0.2, side: THREE.DoubleSide }));
+  const roofMesh = new THREE.Mesh(roof.build(), new THREE.MeshLambertMaterial({ map: roofTex, side: THREE.DoubleSide }));
   roofMesh.castShadow = true;
   roofMesh.receiveShadow = true;
   roofMesh.name = 'grandstand-roof';
@@ -521,11 +521,11 @@ export function buildFlags(group, placements) {
     g.translate(p.x, p.y, p.z);
     cloths.push(g);
   }
-  const poleMesh = new THREE.Mesh(mergeGeometries(poles, false), new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.6, roughness: 0.35 }));
+  const poleMesh = new THREE.Mesh(mergeGeometries(poles, false), new THREE.MeshLambertMaterial({ vertexColors: true }));
   poleMesh.name = 'flag-poles';
   group.add(poleMesh);
   const uniforms = { uTime: { value: 0 } };
-  const mat = new THREE.MeshStandardMaterial({ map: flagsTexture(), side: THREE.DoubleSide, roughness: 0.8 });
+  const mat = new THREE.MeshLambertMaterial({ map: flagsTexture(), side: THREE.DoubleSide });
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = uniforms.uTime;
     shader.vertexShader = shader.vertexShader
@@ -584,13 +584,13 @@ export function buildBillboards(group, placements) {
     }
   }
   const tex = adsTexture();
-  const faceMesh = new THREE.Mesh(mergeGeometries(faces, false), new THREE.MeshStandardMaterial({
-    map: tex, emissiveMap: tex, emissive: 0xffffff, emissiveIntensity: 0.45, roughness: 0.45,
-  }));
+  const faceMesh = new THREE.Mesh(mergeGeometries(faces, false), new THREE.MeshLambertMaterial({
+    map: tex, emissiveMap: tex, emissive: 0xffffff, emissiveIntensity: 0.45, }));
+
   faceMesh.name = 'billboards';
   faceMesh.receiveShadow = true;
   group.add(faceMesh);
-  const frameMesh = new THREE.Mesh(mergeGeometries(frames, false), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.4 }));
+  const frameMesh = new THREE.Mesh(mergeGeometries(frames, false), new THREE.MeshLambertMaterial({ vertexColors: true }));
   frameMesh.castShadow = true;
   frameMesh.receiveShadow = true;
   frameMesh.name = 'billboard-frames';
@@ -624,7 +624,7 @@ export function buildPiers(group, piers) {
     }
   }
   if (!parts.length) return;
-  const mesh = new THREE.Mesh(mergeGeometries(parts, false), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 }));
+  const mesh = new THREE.Mesh(mergeGeometries(parts, false), new THREE.MeshLambertMaterial({ vertexColors: true }));
   mesh.receiveShadow = true;
   mesh.name = 'piers';
   group.add(mesh);

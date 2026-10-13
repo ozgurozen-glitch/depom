@@ -116,7 +116,7 @@ export function naturalHeight(x, z) {
 }
 
 // Yol çevresindeki düz bölge (merkez çizgisine yatay mesafe, m) — bölüm ve tarafa göre.
-function flatZone(section, side) {
+export function flatZone(section, side) {
   switch (section) {
     case 'start': return side > 0 ? 34 : 24;
     case 'harbor': return side > 0 ? 24.5 : 22;
@@ -334,9 +334,7 @@ export class Terrain {
     geo.computeBoundingSphere();
 
     const detail = terrainDetailTexture();
-    const mat = new THREE.MeshStandardMaterial({
-      vertexColors: true, map: detail, roughness: 0.95, metalness: 0, envMapIntensity: 0.55,
-    });
+    const mat = new THREE.MeshLambertMaterial({ vertexColors: true, map: detail });
     // Dünya koordinatlı UV (geometride uv yok): map örneklemesini xz'den yap
     mat.onBeforeCompile = (shader) => {
       shader.vertexShader = shader.vertexShader
@@ -414,48 +412,83 @@ function waveNormalTexture() {
   return toTexture(canvas, { color: false, anisotropy: 8 });
 }
 
-export function createSea() {
+/**
+ * Deniz: hafif özel shader. Yansıma, pişirilmiş gökyüzü küp dokusundan (güneş diski dahil → parıltı yolu)
+ * tek örnekle okunur; Fresnel + derin su rengi + iki/üç katmanlı kayan dalga normali + sis.
+ */
+export function createSea(skyCube, sunDir) {
   const geo = new THREE.CircleGeometry(5200, 64);
   geo.rotateX(-Math.PI / 2);
-  const waveMap = waveNormalTexture();
-  const uniforms = { uTime: { value: 0 }, uWave: { value: waveMap } };
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0x0d4a6b, roughness: 0.06, metalness: 0.0, envMapIntensity: 1.15,
-  });
-  mat.onBeforeCompile = (shader) => {
-    shader.uniforms.uTime = uniforms.uTime;
-    shader.uniforms.uWave = uniforms.uWave;
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vSeaW;')
-      .replace('#include <project_vertex>', '#include <project_vertex>\nvSeaW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
-    shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vSeaW;\nuniform float uTime;\nuniform sampler2D uWave;')
-      .replace('#include <roughnessmap_fragment>', `
-        #include <roughnessmap_fragment>
-        float seaDist = length(vSeaW.xz - cameraPosition.xz);
-        roughnessFactor = mix(roughnessFactor, 0.2, smoothstep(150.0, 2600.0, seaDist));
-      `)
-      .replace('#include <normal_fragment_maps>', `
+  const uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
+    uTime: { value: 0 },
+    uWave: { value: null },
+    uSky: { value: null },
+    uSunDir: { value: new THREE.Vector3() },
+    uDeep: { value: new THREE.Color(0x06263f) },
+    uShallow: { value: new THREE.Color(0x0e5a6e) },
+    uSunColor: { value: new THREE.Color(1.0, 0.62, 0.32) },
+  }]);
+  uniforms.uWave.value = waveNormalTexture();
+  uniforms.uSky.value = skyCube;
+  uniforms.uSunDir.value.copy(sunDir).normalize();
+  const mat = new THREE.ShaderMaterial({
+    name: 'Sea',
+    uniforms,
+    fog: true,
+    vertexShader: /* glsl */`
+      varying vec3 vSeaW;
+      #include <fog_pars_vertex>
+      void main() {
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vSeaW = wp.xyz;
+        vec4 mvPosition = viewMatrix * wp;
+        gl_Position = projectionMatrix * mvPosition;
+        #include <fog_vertex>
+      }
+    `,
+    fragmentShader: /* glsl */`
+      uniform float uTime;
+      uniform sampler2D uWave;
+      uniform samplerCube uSky;
+      uniform vec3 uSunDir;
+      uniform vec3 uDeep;
+      uniform vec3 uShallow;
+      uniform vec3 uSunColor;
+      varying vec3 vSeaW;
+      #include <common>
+      #include <fog_pars_fragment>
+      void main() {
+        vec3 toCam = cameraPosition - vSeaW;
+        float dist = length(toCam.xz);
+        vec3 V = normalize(toCam);
         vec2 sp = vSeaW.xz;
         vec2 w1 = texture2D(uWave, sp * 0.021 + uTime * vec2(0.011, 0.007)).xy * 2.0 - 1.0;
         vec2 w2 = texture2D(uWave, sp * 0.047 + uTime * vec2(-0.017, 0.012)).xy * 2.0 - 1.0;
         vec2 w3 = texture2D(uWave, sp * 0.0053 + uTime * vec2(0.003, -0.004)).xy * 2.0 - 1.0;
-        float atten = 1.0 - smoothstep(300.0, 3200.0, seaDist) * 0.7;
-        vec2 wv = (w1 * 0.55 + w2 * 0.45 + w3 * 0.9) * 0.55 * atten;
-        vec3 seaN = normalize(vec3(wv.x, 1.0, wv.y));
-        normal = normalize((viewMatrix * vec4(seaN, 0.0)).xyz);
-      `)
-      .replace('#include <emissivemap_fragment>', `
-        #include <emissivemap_fragment>
-        // Yakın sularda hafif turkuaz saçılma
-        float shallow = 1.0 - smoothstep(20.0, 400.0, seaDist);
-        totalEmissiveRadiance += vec3(0.0, 0.035, 0.04) * shallow;
-      `);
-  };
-  mat.customProgramCacheKey = () => 'sea-v1';
+        float atten = 1.0 - smoothstep(250.0, 3200.0, dist) * 0.75;
+        vec2 wv = (w1 * 0.55 + w2 * 0.45 + w3 * 0.9) * 0.5 * atten;
+        vec3 N = normalize(vec3(wv.x, 1.0, wv.y));
+        vec3 R = reflect(-V, N);
+        R.y = abs(R.y) + 0.01;
+        vec3 refl = textureCube(uSky, R).rgb;
+        float ndv = clamp(dot(N, V), 0.0, 1.0);
+        float fres = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
+        vec3 water = mix(uShallow, uDeep, smoothstep(30.0, 600.0, dist)) * (0.55 + 0.45 * ndv);
+        // Güneşe bakan sıcak saçılma
+        float back = pow(max(dot(-V.xz, uSunDir.xz) * 0.5 + 0.5, 0.0), 3.0);
+        water += uSunColor * 0.05 * back;
+        vec3 col = mix(water, refl, fres);
+        // Keskin güneş parıltısı
+        col += uSunColor * pow(max(dot(R, uSunDir), 0.0), 900.0) * 9.0;
+        gl_FragColor = vec4(col, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+        #include <fog_fragment>
+      }
+    `,
+  });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.position.y = SEA_LEVEL;
-  mesh.receiveShadow = false;
   mesh.name = 'sea';
   mesh.userData.uniforms = uniforms;
   return mesh;

@@ -29,12 +29,9 @@ export class Environment {
     this.lightDir = dirFrom(SUN_AZIMUTH, LIGHT_ELEVATION);
     const fogColor = new THREE.Color(FOG_COLOR);
     scene.fog = new THREE.FogExp2(fogColor, FOG_DENSITY);
-    scene.background = fogColor.clone();
 
-    // Gökyüzü
-    this.skyMat = createSkyMaterial({ sunDir: this.sunDir, fogColor });
-    this.sky = createSkyMesh(this.skyMat);
-    scene.add(this.sky);
+    // Gökyüzü: shader bir kez HDR küp dokuya pişirilir (arka plan + deniz yansıması), PMREM ayrıca
+    this.bakeSky(fogColor);
     this.buildEnvironmentMap();
 
     // Işıklar
@@ -66,11 +63,25 @@ export class Environment {
     this.terrain = new Terrain(track);
     this.terrainMesh = this.terrain.buildMesh();
     scene.add(this.terrainMesh);
-    this.sea = createSea();
+    this.sea = createSea(this.skyTarget.texture, this.sunDir);
     scene.add(this.sea);
 
     // Mekân
     this.scenery = buildScenery({ scene, track, terrain: this.terrain, sunDir: this.sunDir, renderer });
+  }
+
+  bakeSky(fogColor) {
+    const skyScene = new THREE.Scene();
+    const mat = createSkyMaterial({ sunDir: this.sunDir, fogColor });
+    skyScene.add(createSkyMesh(mat));
+    const rt = new THREE.WebGLCubeRenderTarget(512, {
+      type: THREE.HalfFloatType, generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter,
+    });
+    const cubeCam = new THREE.CubeCamera(0.1, 100, rt);
+    cubeCam.update(this.renderer, skyScene);
+    mat.dispose();
+    this.skyTarget = rt;
+    this.scene.background = rt.texture;
   }
 
   buildEnvironmentMap() {
@@ -87,7 +98,6 @@ export class Environment {
 
   update(dt, focusPos) {
     this.time += dt;
-    this.skyMat.uniforms.uTime.value = this.time;
     this.sea.userData.uniforms.uTime.value = this.time;
     if (!focusPos) return;
 
