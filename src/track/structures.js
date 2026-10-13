@@ -75,8 +75,9 @@ function sweep(writer, track, s0, s1, step, profile, { flip = false, uScale = 0.
     for (let c = 0; c < profile.length; c++) {
       const [lat, h, vv] = profile[c];
       if (c > 0) acc += Math.hypot(lat - profile[c - 1][0], h - profile[c - 1][1]);
-      const v = uvMode === 'profile' ? (vv !== undefined ? vv : acc * uScale) : h * uScale;
-      row.push(writer.v(f.x + f.rx * lat, f.y + h, f.z + f.rz * lat, s * uScale, v, color));
+      const v = uvMode === 'profile' ? (vv !== undefined && vv !== null ? vv : acc * uScale) : h * uScale;
+      const pc = profile[c][3] || color;
+      row.push(writer.v(f.x + f.rx * lat, f.y + h, f.z + f.rz * lat, s * uScale, v, pc));
     }
     rows.push(row);
   }
@@ -108,14 +109,20 @@ export function buildTunnel(track, group, buildingSink) {
     profIn.push([P_IN[i][0], P_IN[i][1], (i < 3 ? acc : 0) / 4]);
   }
   // Duvar karoları her iki tarafta alttan başlasın: profili sol ve sağ duvar için ayrı süpür
-  const left = [[-13, -0.4, 0], [-13, 6.2, 6.6 / 4], [-11.2, 8.4, (6.6 + 2.84) / 4], [0, 8.4, (6.6 + 2.84 + 11.2) / 4]];
-  const right = [[0, 8.4, (6.6 + 2.84 + 11.2) / 4], [11.2, 8.4, (6.6 + 2.84) / 4], [13, 6.2, 6.6 / 4], [13, -0.4, 0]];
+  // Karolar metre başına düzgün (v = profil uzunluğu / 4); duvar dibindeki koyu bant köşe rengiyle
+  // (sert geçiş için 1.0 m'de çift nokta).
+  const dark = new THREE.Color(0.32, 0.32, 0.34);
+  const light = new THREE.Color(1, 1, 1);
+  const left = [[-13, -0.4, null, dark], [-13, 1.0, null, dark], [-13, 1.0, null, light], [-13, 6.2, null, light], [-11.2, 8.4, null, light], [0, 8.4, null, light]];
+  const right = [[0, 8.4, null, light], [11.2, 8.4, null, light], [13, 6.2, null, light], [13, 1.0, null, light], [13, 1.0, null, dark], [13, -0.4, null, dark]];
   sweep(inner, track, t0, t1, 4, left, { flip: false, uScale: 0.25 });
   sweep(inner, track, t0, t1, 4, right, { flip: false, uScale: 0.25 });
-  const innerMat = new THREE.MeshLambertMaterial({ map: tunnelTileTexture(), color: 0xd8c8b0 });
+  const tileMap = tunnelTileTexture();
+  // Hafif öz ışıma: tavan lambalarının duvarları aydınlatması (gerçek ışık kaynağı olmadan)
+  const innerMat = new THREE.MeshLambertMaterial({ map: tileMap, vertexColors: true, color: 0xe2d6c4, emissive: 0xff9a50, emissiveMap: tileMap, emissiveIntensity: 0.09 });
   // Karo dokusu: v=0 alt (koyu bant dokunun altında)
   innerMat.map.wrapT = THREE.RepeatWrapping;
-  const innerMesh = new THREE.Mesh(inner.build(), innerMat);
+  const innerMesh = new THREE.Mesh(inner.build({ colors: true }), innerMat);
   innerMesh.receiveShadow = true;
   innerMesh.name = 'tunnel-inner';
   group.add(innerMesh);
@@ -170,7 +177,7 @@ export function buildTunnel(track, group, buildingSink) {
       lights.tri(corners[1], corners[2], corners[3]);
     }
   }
-  const lightMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.6, 1.25, 0.38), side: THREE.DoubleSide, fog: false });
+  const lightMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(3.0, 1.15, 0.22), side: THREE.DoubleSide, fog: false });
   const lightMesh = new THREE.Mesh(lights.build(), lightMat);
   lightMesh.name = 'tunnel-lights';
   group.add(lightMesh);
@@ -344,23 +351,34 @@ export function buildGrandstands(track, group, blocks) {
         const lat0 = FRONT + j * TREAD;
         const h0 = BASE_H + j * RISE;
         const vb = (j % 4) / 4;
-        rowT.push(P(lat0, h0, u, 1 - (vb + 0.0)));
-        rowT.push(P(lat0, h0 + RISE, u, 1 - (vb + 0.12)));
-        rowT.push(P(lat0 + TREAD, h0 + RISE, u, 1 - (vb + 0.25)));
+        // Rıht seyircileri gösterir (dokuda gövde+baş), basamak yüzü koltuk sırtı
+        rowT.push(P(lat0, h0, u, 1 - vb - 0.22));
+        rowT.push(P(lat0, h0 + RISE, u, 1 - vb - 0.06));
+        rowT.push(P(lat0 + TREAD, h0 + RISE, u, 1 - vb - 0.005));
       }
       rowsT.push(rowT);
       // Yapı: ön duvar (zeminden ilk basamağa), arka duvar, arka çatı direkleri yerine dolu duvar
       const backLat = FRONT + TIERS * TREAD;
       const topH = BASE_H + TIERS * RISE;
+      // İki ayrı çoklu çizgi: ön korkuluk duvarı ve arka duvar
       const rowS = [
-        P(FRONT - 0.3, -0.6, u, 0, struct), P(FRONT - 0.3, BASE_H + 0.9, u, 0.3, struct), P(FRONT, BASE_H + 0.9, u, 0.35, struct),
-        P(backLat, topH + 1.2, u, 0.6, struct), P(backLat + 0.4, topH + 1.2, u, 0.62, struct), P(backLat + 0.4, -0.6, u, 1, struct),
+        [P(FRONT - 0.3, -0.6, u, 0, struct), P(FRONT - 0.3, BASE_H + 0.9, u, 0.3, struct), P(FRONT, BASE_H + 0.9, u, 0.35, struct), P(FRONT, BASE_H - 0.1, u, 0.4, struct)],
+        [P(backLat, topH + 1.2, u, 0.6, struct), P(backLat + 0.4, topH + 1.2, u, 0.62, struct), P(backLat + 0.4, -0.6, u, 1, struct)],
       ];
       rowsS.push(rowS);
-      // Çatı: hafif eğimli, öne doğru taşan
-      const rh0 = topH + 5.5;
-      const rh1 = topH + 4.2;
-      roof.v(f.x - f.rx * (FRONT - 3), g + rh1, f.z - f.rz * (FRONT - 3), u, 0);
+      // Arka direkler (çatıyı taşır)
+      if (k % 3 === 0) {
+        const a = struct.v(f.x - f.rx * (backLat + 0.2) - f.tx * 0.3, g + topH + 1.2, f.z - f.rz * (backLat + 0.2) - f.tz * 0.3, 0, 0);
+        const b = struct.v(f.x - f.rx * (backLat + 0.2) + f.tx * 0.3, g + topH + 1.2, f.z - f.rz * (backLat + 0.2) + f.tz * 0.3, 0, 0);
+        const c = struct.v(f.x - f.rx * (backLat + 0.2) - f.tx * 0.3, g + topH + 6.0, f.z - f.rz * (backLat + 0.2) - f.tz * 0.3, 0, 0);
+        const d = struct.v(f.x - f.rx * (backLat + 0.2) + f.tx * 0.3, g + topH + 6.0, f.z - f.rz * (backLat + 0.2) + f.tz * 0.3, 0, 0);
+        struct.tri(a, b, c);
+        struct.tri(b, d, c);
+      }
+      // Çatı: hafif eğimli, öne doğru az taşan
+      const rh0 = topH + 5.8;
+      const rh1 = topH + 4.6;
+      roof.v(f.x - f.rx * (FRONT - 1), g + rh1, f.z - f.rz * (FRONT - 1), u, 0);
       roof.v(f.x - f.rx * (backLat + 1), g + rh0, f.z - f.rz * (backLat + 1), u, 1);
     }
     for (let k = 0; k < n; k++) {
@@ -371,11 +389,13 @@ export function buildGrandstands(track, group, blocks) {
         tiers.tri(A[c], B[c], A[c + 1]);
         tiers.tri(A[c + 1], B[c], B[c + 1]);
       }
-      const SA = rowsS[k];
-      const SB = rowsS[k + 1];
-      for (let c = 0; c < SA.length - 1; c++) {
-        struct.tri(SA[c], SB[c], SA[c + 1]);
-        struct.tri(SA[c + 1], SB[c], SB[c + 1]);
+      for (let pl = 0; pl < 2; pl++) {
+        const SA = rowsS[k][pl];
+        const SB = rowsS[k + 1][pl];
+        for (let c = 0; c < SA.length - 1; c++) {
+          struct.tri(SA[c], SB[c], SA[c + 1]);
+          struct.tri(SA[c + 1], SB[c], SB[c + 1]);
+        }
       }
     }
     // Çatı üçgenleri (iki yüzlü malzeme)
@@ -415,7 +435,8 @@ export function buildGrandstands(track, group, blocks) {
   const roofTex = new THREE.CanvasTexture(roofCanvas);
   roofTex.colorSpace = THREE.SRGBColorSpace;
   roofTex.wrapS = THREE.RepeatWrapping;
-  const roofMesh = new THREE.Mesh(roof.build(), new THREE.MeshLambertMaterial({ map: roofTex, side: THREE.DoubleSide }));
+  // Çatı altı yalnızca zemin yarıküre ışığı alıp çamur rengine dönmesin: hafif öz ışıma
+  const roofMesh = new THREE.Mesh(roof.build(), new THREE.MeshLambertMaterial({ map: roofTex, side: THREE.DoubleSide, emissive: 0x8a8580, emissiveMap: roofTex, emissiveIntensity: 0.6 }));
   roofMesh.castShadow = true;
   roofMesh.receiveShadow = true;
   roofMesh.name = 'grandstand-roof';

@@ -338,17 +338,27 @@ export class Terrain {
     // Dünya koordinatlı UV (geometride uv yok): map örneklemesini xz'den yap
     mat.onBeforeCompile = (shader) => {
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nvarying vec2 vTerrUv;')
-        .replace('#include <uv_vertex>', '#include <uv_vertex>\nvTerrUv = (modelMatrix * vec4(position, 1.0)).xz;');
+        .replace('#include <common>', '#include <common>\nvarying vec3 vTerrW;\nvarying float vTerrNy;')
+        .replace('#include <uv_vertex>', '#include <uv_vertex>\nvTerrW = (modelMatrix * vec4(position, 1.0)).xyz;\nvTerrNy = normal.y;');
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying vec2 vTerrUv;')
+        .replace('#include <common>', '#include <common>\nvarying vec3 vTerrW;\nvarying float vTerrNy;')
         .replace('#include <map_fragment>', `
-          vec4 dA = texture2D(map, vTerrUv * 0.045);
-          vec4 dB = texture2D(map, vTerrUv * 0.0071);
+          vec2 tuv = vTerrW.xz;
+          vec4 dA = texture2D(map, tuv * 0.045);
+          vec4 dB = texture2D(map, tuv * 0.0071);
           diffuseColor.rgb *= (0.55 + dA.rgb * 0.75) * (0.7 + dB.rgb * 0.55);
+          // Dik yamaçlarda kaya katmanları (tabakalanma) ve yarık gölgeleri
+          float steep = smoothstep(0.88, 0.55, vTerrNy);
+          float strata = sin(vTerrW.y * 1.35 + dB.r * 6.0 + dA.g * 1.5);
+          // Dik yüzlerde dikey doku (yan izdüşüm) → kayalık yarma görünümü
+          float cliffA = texture2D(map, vec2((vTerrW.x - vTerrW.z) * 0.035, vTerrW.y * 0.09)).r;
+          float cliffB = texture2D(map, vec2((vTerrW.x + vTerrW.z) * 0.11, vTerrW.y * 0.05)).g;
+          float cliff = 0.5 + (cliffA - 0.55) * 1.3 + (cliffB - 0.55) * 0.8;
+          diffuseColor.rgb *= mix(1.0, clamp(cliff, 0.25, 1.4), steep);
+          diffuseColor.rgb *= 1.0 - steep * (0.14 + 0.14 * strata);
         `);
     };
-    mat.customProgramCacheKey = () => 'terrain-v1';
+    mat.customProgramCacheKey = () => 'terrain-v3';
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow = true;
     mesh.name = 'terrain';

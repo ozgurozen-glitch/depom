@@ -389,7 +389,7 @@ export function stoneTexture() {
   return toTexture(canvas, { anisotropy: 8 });
 }
 
-/** Tünel duvar karoları: 4 m x 4 m; alt 1 m koyu bant. */
+/** Tünel duvar karoları: 4 m x 4 m (koyu alt bant köşe rengiyle verilir). */
 export function tunnelTileTexture() {
   const S = 256;
   const { canvas, ctx } = makeCanvas(S, S);
@@ -405,10 +405,6 @@ export function tunnelTileTexture() {
       ctx.fillRect(x * c + 1, y * c + 1, c - 2, c - 2);
     }
   }
-  ctx.fillStyle = '#3b3f46';
-  ctx.fillRect(0, S - S / 4, S, S / 4);
-  ctx.fillStyle = '#f0c419';
-  ctx.fillRect(0, S - S / 4 - 6, S, 6);
   addNoise(ctx, S, S, 10, 6, 26, 32);
   return toTexture(canvas, { anisotropy: 8 });
 }
@@ -418,27 +414,67 @@ export function flagsTexture() {
   const W = 512;
   const H = 256;
   const { canvas, ctx } = makeCanvas(W, H);
+  // Ulusal bayraklara benzemeyen yarış / sponsor bayrakları
   const designs = [
-    (x, y) => { stripes(ctx, x, y, ['#e8202a', '#ffffff', '#e8202a'], true); },
-    (x, y) => { stripes(ctx, x, y, ['#1f4fd8', '#ffd21a', '#1f4fd8'], false); },
     (x, y) => { checker(ctx, x, y); },
-    (x, y) => { stripes(ctx, x, y, ['#16a34a', '#ffffff', '#ff7a1a'], false); },
-    (x, y) => { stripes(ctx, x, y, ['#ffffff', '#e8202a'], true); },
-    (x, y) => { stripes(ctx, x, y, ['#0a84ff', '#ffffff'], true); ctx.fillStyle = '#ffd21a'; ctx.beginPath(); ctx.arc(x + 64, y + 64, 26, 0, Math.PI * 2); ctx.fill(); },
-    (x, y) => { stripes(ctx, x, y, ['#111111', '#ffd21a', '#e8202a'], false); },
-    (x, y) => { stripes(ctx, x, y, ['#bf5af2', '#ffffff', '#bf5af2'], true); },
+    (x, y) => { fill(ctx, x, y, '#e8202a'); diag(ctx, x, y, '#ffffff', 22); },
+    (x, y) => { fill(ctx, x, y, '#1550c8'); star(ctx, x + 64, y + 64, 34, '#ffd21a'); },
+    (x, y) => { fill(ctx, x, y, '#111111'); diag(ctx, x, y, '#ff7a1a', 40); },
+    (x, y) => { fill(ctx, x, y, '#7b2cbf'); ring(ctx, x + 64, y + 64, 30, '#ffffff'); },
+    (x, y) => { fill(ctx, x, y, '#0fb5a8'); chevron(ctx, x, y, '#ffffff'); },
+    (x, y) => { fill(ctx, x, y, '#ffd21a'); diag(ctx, x, y, '#111111', 14); },
+    (x, y) => { fill(ctx, x, y, '#f4f4f0'); diag(ctx, x, y, '#e8202a', 12); diag(ctx, x, y, '#1550c8', 12, 22); },
   ];
   designs.forEach((fn, i) => fn((i % 4) * 128, Math.floor(i / 4) * 128));
   return toTexture(canvas, { repeat: false, anisotropy: 4 });
 }
 
-function stripes(ctx, x, y, cols, horizontal) {
-  const n = cols.length;
-  cols.forEach((c, i) => {
-    ctx.fillStyle = c;
-    if (horizontal) ctx.fillRect(x, y + (i * 128) / n, 128, 128 / n + 1);
-    else ctx.fillRect(x + (i * 128) / n, y, 128 / n + 1, 128);
-  });
+function fill(ctx, x, y, c) {
+  ctx.fillStyle = c;
+  ctx.fillRect(x, y, 128, 128);
+}
+
+function diag(ctx, x, y, c, w, off = 0) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, 128, 128);
+  ctx.clip();
+  ctx.strokeStyle = c;
+  ctx.lineWidth = w;
+  ctx.beginPath();
+  ctx.moveTo(x - 10 + off, y + 138);
+  ctx.lineTo(x + 138 + off, y - 10);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function star(ctx, cx, cy, r, c) {
+  ctx.fillStyle = c;
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = -Math.PI / 2 + (i * Math.PI) / 5;
+    const rr = i % 2 === 0 ? r : r * 0.45;
+    ctx.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+function ring(ctx, cx, cy, r, c) {
+  ctx.strokeStyle = c;
+  ctx.lineWidth = 12;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+function chevron(ctx, x, y, c) {
+  ctx.fillStyle = c;
+  ctx.beginPath();
+  ctx.moveTo(x + 20, y + 20); ctx.lineTo(x + 70, y + 64); ctx.lineTo(x + 20, y + 108);
+  ctx.lineTo(x + 46, y + 108); ctx.lineTo(x + 96, y + 64); ctx.lineTo(x + 46, y + 20);
+  ctx.closePath();
+  ctx.fill();
 }
 
 function checker(ctx, x, y) {

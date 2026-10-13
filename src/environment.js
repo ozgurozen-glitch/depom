@@ -35,7 +35,8 @@ export class Environment {
     this.buildEnvironmentMap();
 
     // Işıklar
-    this.hemi = new THREE.HemisphereLight(0x9fb0ff, 0x6a4a3a, 0.65);
+    // Not: r155+ fiziksel ışık ölçeğinde Lambert ortam ışığı ~1/π ile çarpılır → yüksek yoğunluk
+    this.hemi = new THREE.HemisphereLight(0xa8b4ff, 0x7a5444, 1.9);
     this.hemiBase = { intensity: this.hemi.intensity, sky: this.hemi.color.clone(), ground: this.hemi.groundColor.clone() };
     scene.add(this.hemi);
 
@@ -146,4 +147,4 @@ export class Environment {
   }
 }
 
-const TUNNEL_TINT = new THREE.Color(0xff9a40);
+const TUNNEL_TINT = new THREE.Color(0xffb070);

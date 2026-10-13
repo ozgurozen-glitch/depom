@@ -402,8 +402,8 @@ export function buildScenery({ scene, track, terrain }) {
   for (let s = -170; s <= 175; s += 15) {
     if (Math.abs(s) < 14) continue;
     const f = frameAt(track, s);
-    const x = f.x + f.rx * 13.8;
-    const z = f.z + f.rz * 13.8;
+    const x = f.x + f.rx * 14.8;
+    const z = f.z + f.rz * 14.8;
     if (dist(x, z) < MIN_CLEAR) continue;
     flagPl.push({ x, y: f.y + 0.1, z, yaw: f.yaw + Math.PI / 2, design: fi++ % 8 });
   }
@@ -441,8 +441,8 @@ export function buildScenery({ scene, track, terrain }) {
   addBoard(sec.climb.s0 + 120, -1, 26);
   addBoard(sec.harbor.s0 + 160, -1, 26);
   addBoard(sec.harbor.s0 + 470, -1, 26);
-  for (let s = 60; s < 200; s += 34) addBoard(s, 1, 14, { w: 8, lift: 0.2, angle: Math.PI / 2 });
-  for (let s = -90; s > -200; s -= 34) addBoard(s, 1, 14, { w: 8, lift: 0.2, angle: Math.PI / 2 });
+  for (let s = 60; s < 200; s += 34) addBoard(s, 1, 16, { w: 8, lift: 0.2, angle: Math.PI / 2 });
+  for (let s = -90; s > -200; s -= 34) addBoard(s, 1, 16, { w: 8, lift: 0.2, angle: Math.PI / 2 });
   if (boards.length) buildBillboards(group, boards);
 
   // ---------------- Yatlar ve iskeleler
@@ -515,9 +515,20 @@ export function buildScenery({ scene, track, terrain }) {
   const pines = [];
   const bushes = [];
   const rocks = [];
-  for (let k = 0; k < 9000; k++) {
-    const x = rr(-1100, 1150);
-    const z = rr(-750, 520);
+  const near = { x: 0, z: 0 };
+  for (let k = 0; k < 11000; k++) {
+    let x;
+    let z;
+    if (k % 2 === 0) {
+      // Pist yakını (kameranın gördüğü yer)
+      const f = frameAt(track, rnd() * L, near);
+      const l = (rnd() < 0.5 ? -1 : 1) * rr(20, 130);
+      x = f.x + f.rx * l;
+      z = f.z + f.rz * l;
+    } else {
+      x = rr(-1100, 1150);
+      z = rr(-750, 520);
+    }
     const g = ground(x, z);
     if (g < SEA_LEVEL + 1.2) continue;
     const cm = cityMask(x, z);
@@ -525,16 +536,19 @@ export function buildScenery({ scene, track, terrain }) {
     const slope = terrain.slopeAt(x, z);
     const sd = seaSignedDistance(x, z);
     // Kayalar: dik yamaçlar ve kıyı
-    if ((slope < 0.72 || (sd > -35 && sd < 5)) && d > 16 && rocks.length < 320 && rnd() < 0.5) {
-      rocks.push({ x, y: g - 0.4, z, yaw: rnd() * 6.28, sx: rr(1.5, 5), sy: rr(1.2, 3.5), sz: rr(1.5, 5) });
+    if ((slope < 0.72 || (sd > -35 && sd < 5)) && d > 16 && rocks.length < 460 && rnd() < 0.6) {
+      const rs = rr(1.5, 4.5);
+      // Dik yamaçta kaya havada kalmasın: eğime göre göm
+      const sink = rs * Math.min(1.1, 0.25 + (1 - slope) * 2.2);
+      rocks.push({ x, y: g - sink, z, yaw: rnd() * 6.28, sx: rs * rr(0.8, 1.3), sy: rs * rr(0.7, 1.1), sz: rs * rr(0.8, 1.3) });
       continue;
     }
     if (cm > 0.35 || slope < 0.72 || d < 17) continue;
     if (overlaps(x, z, 2.5)) continue;
     const r = rnd();
-    if (r < 0.1 && cypress.length < 240) cypress.push({ x, y: g - 0.2, z, yaw: rnd() * 6.28, sx: rr(7, 10), sy: rr(11, 17), sz: rr(7, 10) });
-    else if (r < 0.2 && pines.length < 200) pines.push({ x, y: g - 0.3, z, yaw: rnd() * 6.28, sx: rr(10, 15), sy: rr(10, 15), sz: rr(10, 15) });
-    else if (bushes.length < 700) bushes.push({ x, y: g - 0.2, z, yaw: rnd() * 6.28, sx: rr(2, 5), sy: rr(1.5, 3), sz: rr(2, 5) });
+    if (r < 0.12 && cypress.length < 300) cypress.push({ x, y: g - 0.2, z, yaw: rnd() * 6.28, sx: rr(7, 10), sy: rr(11, 17), sz: rr(7, 10) });
+    else if (r < 0.24 && pines.length < 260) pines.push({ x, y: g - 0.3, z, yaw: rnd() * 6.28, sx: rr(10, 15), sy: rr(10, 15), sz: rr(10, 15) });
+    else if (bushes.length < 900) bushes.push({ x, y: g - 0.2, z, yaw: rnd() * 6.28, sx: rr(2, 5), sy: rr(1.5, 3), sz: rr(2, 5) });
   }
   // Villaların yanına selviler
   for (const v of villas) {
@@ -555,7 +569,9 @@ export function buildScenery({ scene, track, terrain }) {
       const z = f.z + f.rz * l;
       const g = ground(x, z);
       if (g - f.y < 2.5 || dist(x, z) < 16.5) continue;
-      rocks.push({ x, y: g - 0.6, z, yaw: rnd() * 6.28, sx: rr(3, 7), sy: rr(2.5, 6), sz: rr(3, 7) });
+      const rs = rr(3, 6.5);
+      const sl = terrain.slopeAt(x, z);
+      rocks.push({ x, y: g - rs * Math.min(1.1, 0.3 + (1 - sl) * 2.2), z, yaw: rnd() * 6.28, sx: rs * rr(0.8, 1.3), sy: rs * rr(0.8, 1.2), sz: rs * rr(0.8, 1.3) });
     }
   }
   const generic = (it, mm) => {

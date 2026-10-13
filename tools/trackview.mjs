@@ -115,6 +115,8 @@ async function main() {
         g.player.position.copy(p.pos);
       }
       cam.updateProjectionMatrix();
+      // Duraklatılmış simülasyonda ortamın (gölge kutusu, tünel ambiyansı) yeni konuma oturması için
+      for (let i = 0; i < 6; i++) g.environment.update(0.5, g.player.position);
       return { pos: cam.position.toArray().map((n) => Math.round(n)), section: tr.sectionAt ? tr.sectionAt(v.s || 0) : '' };
     }, { v, opt });
     await sleep(Number(opt.settle) * 1000);

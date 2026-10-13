@@ -173,7 +173,7 @@ export function barrierTexture() {
       ctx.fillStyle = '#ffffff';
       ctx.font = `italic bold ${Math.round(RH * 0.3)}px sans-serif`;
       ctx.textBaseline = 'middle';
-      const names = ['VOLTA', 'NAUTICA', 'SOLARIS', 'KRONOS'];
+      const names = ['VELTRA', 'AZURINE', 'SOLENNE', 'KRONEX'];
       for (let k = 0; k < 4; k++) ctx.fillText(names[k], k * 4 * pxPerM + 22, y0 + RH * 0.4);
     }
     if (row === 2) {
