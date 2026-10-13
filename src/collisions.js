@@ -37,12 +37,10 @@ export class CollisionSystem {
     this.cap = 0;
     this.time = 1; // lastContact varsayılanı 0 → başlangıçta "yakın zamanda temas" sayılmasın
     this.impulse = new THREE.Vector3();
-    this.frame = { rx: 0, rz: 0, halfW: 10 };
-    // temas sonucu (obb testi)
-    this.nx = 0;
-    this.nz = 0;
-    this.depth = 0;
-    this.radA = 0;
+    // temas sonucu (overlap testi): [nx, nz, derinlik, A'nın normal boyunca yarıçapı].
+    // Tipli dizi: nesne alanına double yazmak V8'de kutulu sayı üretebilir, bu üretmez.
+    this.hit = new Float64Array(4);
+    this.trackLength = new Float64Array(1);
     this.ensureCapacity(16);
   }
 
@@ -82,6 +80,7 @@ export class CollisionSystem {
     if (!cars || cars.length < 2) return EMPTY;
     const line = track ? getRacingLine(track) : null;
     const L = track && track.length > 0 ? track.length : 0;
+    this.trackLength[0] = L;
     let events = null;
     const n = cars.length;
 
@@ -113,12 +112,12 @@ export class CollisionSystem {
           continue;
         }
 
-        if (this.overlap(A, B, dx, dz, d2)) {
+        if (this.overlap(A, B)) {
           events = this.resolve(A, B, key, line, events);
           this.lastContact[key] = this.time;
           this.prevValid[key] = 0; // temas sırasında near miss izleme sıfırlanır
         } else if (L > 0) {
-          events = this.trackNearMiss(A, B, key, L, events);
+          events = this.trackNearMiss(A, B, key, events);
         }
       }
     }
@@ -126,8 +125,12 @@ export class CollisionSystem {
   }
 
   // XZ'de iki yönlendirilmiş kutu için ayırma ekseni testi (SAT). Temas varsa en küçük nüfuz ekseni
-  // (A'dan B'ye normal) ve derinliği this.nx/nz/depth'e yazılır.
-  overlap(A, B, dx, dz, d2) {
+  // (A'dan B'ye normal) ve derinliği this.hit'e yazılır.
+  // (Double argümanlar satır içi olmayan çağrılarda kutulanır; bu yüzden değerler burada yeniden hesaplanır.)
+  overlap(A, B) {
+    const dx = B.position.x - A.position.x;
+    const dz = B.position.z - A.position.z;
+    const d2 = dx * dx + dz * dz;
     const hlA = A.halfLength;
     const hwA = A.halfWidth;
     const hlB = B.halfLength;
@@ -139,15 +142,16 @@ export class CollisionSystem {
       const rr = rA + rB;
       if (d2 >= rr * rr) return false;
       const d = Math.sqrt(d2);
+      const hit = this.hit;
       if (d > 1e-6) {
-        this.nx = dx / d;
-        this.nz = dz / d;
+        hit[0] = dx / d;
+        hit[1] = dz / d;
       } else {
-        this.nx = Math.sin(A.yaw) || 1;
-        this.nz = Math.cos(A.yaw) || 0;
+        hit[0] = Math.sin(A.yaw);
+        hit[1] = Math.cos(A.yaw);
       }
-      this.depth = rr - d;
-      this.radA = rA;
+      hit[2] = rr - d;
+      hit[3] = rA;
       return true;
     }
     const bA = hlA * hlA + hwA * hwA;
@@ -181,17 +185,19 @@ export class CollisionSystem {
         bra = ra;
       }
     }
-    this.nx = bnx;
-    this.nz = bnz;
-    this.depth = best;
-    this.radA = bra;
+    const hit = this.hit;
+    hit[0] = bnx;
+    hit[1] = bnz;
+    hit[2] = best;
+    hit[3] = bra;
     return true;
   }
 
   resolve(A, B, key, line, events) {
-    const nx = this.nx;
-    const nz = this.nz;
-    const depth = this.depth;
+    const hit = this.hit;
+    const nx = hit[0];
+    const nz = hit[1];
+    const depth = hit[2];
     const va = A.velocity;
     const vb = B.velocity;
     const vn = (vb.x - va.x) * nx + (vb.z - va.z) * nz; // < 0: yaklaşıyorlar
@@ -264,7 +270,7 @@ export class CollisionSystem {
       const owner = B.isPlayer && !A.isPlayer ? B : A.isPlayer ? A : att;
       const other = owner === A ? B : A;
       // temas noktası: A'nın merkezinden normal boyunca kutu kenarına
-      const ra = this.radA - depth / 2;
+      const ra = hit[3] - depth / 2;
       const point = new THREE.Vector3(
         A.position.x + nx * ra,
         (A.position.y + B.position.y) / 2 + 0.5,
@@ -278,16 +284,17 @@ export class CollisionSystem {
   // Araba yanal olarak duvar sınırına yakın ve (ux,uz) itme yönü o duvara dönük mü?
   isPinned(car, ux, uz, line) {
     if (!line || !Number.isFinite(car.lateral) || !Number.isFinite(car.trackS)) return false;
-    const f = line.frameAt(car.trackS, this.frame);
+    const i = line.sampleIndex(car.trackS);
     const half = car.halfWidth > 0 ? car.halfWidth : 1;
     const side = car.lateral >= 0 ? 1 : -1;
-    if (Math.abs(car.lateral) + half < f.halfW - PIN_WALL_ZONE) return false;
-    const outward = (ux * f.rx + uz * f.rz) * side;
+    if (Math.abs(car.lateral) + half < line.halfW[i] - PIN_WALL_ZONE) return false;
+    const outward = (ux * line.rx[i] + uz * line.rz[i]) * side;
     return outward > PIN_DIRECTION;
   }
 
   // Near miss: pist boyunca sıralama değişimi (geçiş) anında yanal boşluk ve göreli hız kontrolü.
-  trackNearMiss(A, B, key, L, events) {
+  trackNearMiss(A, B, key, events) {
+    const L = this.trackLength[0];
     let ds = B.trackS - A.trackS;
     if (!Number.isFinite(ds)) {
       this.prevValid[key] = 0;

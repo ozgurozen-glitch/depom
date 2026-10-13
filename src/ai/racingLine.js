@@ -194,14 +194,9 @@ export class RacingLine {
     return out;
   }
 
-  /** s'deki pist çerçevesi: sağ vektör (XZ) ve yol yarı genişliği → out.rx/rz/halfW. */
-  frameAt(s, out) {
-    const x = this.indexOf(s);
-    const i = Math.floor(x) % this.n;
-    out.rx = this.rx[i];
-    out.rz = this.rz[i];
-    out.halfW = this.halfW[i];
-    return out;
+  /** s'ye en yakın (alttaki) örneğin tamsayı indeksi; rx/rz/halfW gibi dizilere doğrudan erişim için. */
+  sampleIndex(s) {
+    return Math.floor(this.indexOf(s)) % this.n;
   }
 
   /** (s, lateral) noktasının dünya koordinatını out.x/y/z'ye yazar (nesne üretmez). */
