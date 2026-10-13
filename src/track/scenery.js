@@ -15,7 +15,6 @@ import {
   frameAt, AD_COUNT,
 } from './structures.js';
 
-const lerp = (a, b, t) => a + (b - a) * t;
 
 const RIVIERA_TINTS = [0xf6d7b0, 0xf2c4a0, 0xf7e6c4, 0xeeb59a, 0xf4dcc8, 0xe9c78f, 0xf5efe0, 0xf1b9a6, 0xe8d3b9];
 const GLASS_TINTS = [0xdfefff, 0xcfe3f2, 0xe8f2f8, 0xd2e6e0, 0xf2e8e0];

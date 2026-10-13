@@ -54,7 +54,9 @@ export function makeCanvas(w, h) {
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
-  return { canvas, ctx: canvas.getContext('2d') };
+  // willReadFrequently: piksel gürültüsü için getImageData/putImageData kullanıyoruz → yazılım
+  // canvas'ı GPU geri okumasından çok daha hızlı.
+  return { canvas, ctx: canvas.getContext('2d', { willReadFrequently: true }) };
 }
 
 export function toTexture(canvas, { color = true, repeat = true, anisotropy = 8, mipmaps = true } = {}) {
@@ -91,6 +93,35 @@ export function paintPixels(ctx, w, h, fn) {
 
 const clamp255 = (v) => (v < 0 ? 0 : v > 255 ? 255 : v);
 
+/**
+ * Düşük frekanslı alanı (ör. fbm) yalnızca her `cell` pikselde hesaplayıp çift doğrusal ara değerler
+ * (döşenebilir). Büyük dokularda piksel başına fbm maliyetini ~cell² kat azaltır.
+ */
+export function coarseField(W, H, cell, fn) {
+  const gw = Math.ceil(W / cell);
+  const gh = Math.ceil(H / cell);
+  const grid = new Float32Array(gw * gh);
+  for (let j = 0; j < gh; j++) for (let i = 0; i < gw; i++) grid[j * gw + i] = fn(i * cell, j * cell);
+  const out = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) {
+    const gy = y / cell;
+    const j0 = Math.floor(gy);
+    const fy = gy - j0;
+    const r0 = (j0 % gh) * gw;
+    const r1 = ((j0 + 1) % gh) * gw;
+    for (let x = 0; x < W; x++) {
+      const gx = x / cell;
+      const i0 = Math.floor(gx);
+      const fx = gx - i0;
+      const i1 = (i0 + 1) % gw;
+      const a = grid[r0 + (i0 % gw)] + (grid[r0 + i1] - grid[r0 + (i0 % gw)]) * fx;
+      const b = grid[r1 + (i0 % gw)] + (grid[r1 + i1] - grid[r1 + (i0 % gw)]) * fx;
+      out[y * W + x] = a + (b - a) * fy;
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Asfalt: u = yol genişliği (20 m), v = tileLength (24 m). Şerit çizgileri ve lastik izleri dokuda.
 export function asphaltTexture({ widthM = 20, lengthM = 24 } = {}) {
@@ -100,33 +131,38 @@ export function asphaltTexture({ widthM = 20, lengthM = 24 } = {}) {
   const rnd = mulberry32(7);
   const pxPerMx = W / widthM;
   const pxPerMy = H / lengthM;
-  const lanes = [-7.5, -2.5, 2.5, 7.5];
-  paintPixels(ctx, W, H, (x, y, out) => {
+  // Sütun başına sabitler (lastik izi ve çizgi konumları yalnız x'e bağlı)
+  const wearCol = new Float32Array(W);
+  const dashCol = new Uint8Array(W);
+  const edgeCol = new Uint8Array(W);
+  for (let x = 0; x < W; x++) {
     const lat = x / pxPerMx - widthM / 2;
-    const n1 = tileFbm(x / 64, y / 64, W / 64, H / 64, 4, 3);
-    const n2 = tileNoise(x / 6, y / 6, W / 6, H / 6, 9);
-    let base = 52 + (n1 - 0.5) * 26 + (n2 - 0.5) * 10 + (rnd() - 0.5) * 22;
-    // Agrega parıltıları
-    if (rnd() < 0.012) base += 40 * rnd();
-    // Lastik izleri (şerit merkezinin ±0.85 m'si)
     let wear = 0;
-    for (const c of lanes) {
+    for (const c of [-7.5, -2.5, 2.5, 7.5]) {
       for (const o of [-0.85, 0.85]) {
         const d = (lat - c - o) / 0.32;
         wear += Math.exp(-d * d);
       }
     }
-    base *= 1 - 0.13 * Math.min(1, wear) * (0.7 + 0.3 * n1);
+    wearCol[x] = Math.min(1, wear);
+    for (const c of [-5, 0, 5]) if (Math.abs(lat - c) < 0.08) dashCol[x] = 1;
+    for (const c of [-9.15, 9.15]) if (Math.abs(lat - c) < 0.11) edgeCol[x] = 1;
+  }
+  const low = coarseField(W, H, 8, (x, y) => tileFbm(x / 64, y / 64, W / 64, H / 64, 4, 3));
+  paintPixels(ctx, W, H, (x, y, out) => {
+    const n1 = low[y * W + x];
+    const n2 = tileNoise(x / 6, y / 6, W / 6, H / 6, 9);
+    let base = 52 + (n1 - 0.5) * 26 + (n2 - 0.5) * 10 + (rnd() - 0.5) * 22;
+    // Agrega parıltıları
+    if (rnd() < 0.012) base += 40 * rnd();
+    // Lastik izleri (şerit merkezinin ±0.85 m'si)
+    base *= 1 - 0.13 * wearCol[x] * (0.7 + 0.3 * n1);
     let r = base * 0.93;
     let g = base * 0.95;
     let b = base * 1.04;
     // Şerit çizgileri
-    const along = y / pxPerMy;
-    const dashOn = (along % 12) < 6;
-    let paint = 0;
-    for (const c of [-5, 0, 5]) if (Math.abs(lat - c) < 0.08 && dashOn) paint = 1;
-    for (const c of [-9.15, 9.15]) if (Math.abs(lat - c) < 0.11) paint = 1;
-    if (paint) {
+    const dashOn = ((y / pxPerMy) % 12) < 6;
+    if ((dashCol[x] && dashOn) || edgeCol[x]) {
       const worn = 0.82 + 0.18 * tileNoise(x / 3, y / 3, W / 3, H / 3, 21) - (rnd() < 0.08 ? 0.3 : 0);
       r = 236 * worn; g = 236 * worn; b = 228 * worn;
     }
@@ -211,10 +247,11 @@ export function barrierTexture() {
   const img = ctx.getImageData(0, 0, W, H);
   const d = img.data;
   const rnd = mulberry32(11);
+  const low = coarseField(W, H, 4, (x, y) => tileFbm(x / 24, y / 24, W / 24, H / 24, 3, 5));
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const k = (y * W + x) * 4;
-      const n = (tileFbm(x / 24, y / 24, W / 24, H / 24, 3, 5) - 0.5) * 34 + (rnd() - 0.5) * 14;
+      const n = (low[y * W + x] - 0.5) * 34 + (rnd() - 0.5) * 14;
       d[k] = clamp255(d[k] + n);
       d[k + 1] = clamp255(d[k + 1] + n);
       d[k + 2] = clamp255(d[k + 2] + n);

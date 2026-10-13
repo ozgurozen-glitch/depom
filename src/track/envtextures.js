@@ -1,6 +1,6 @@
 // Mekân dokuları (prosedürel canvas). Markalar uydurmadır.
 import * as THREE from 'three';
-import { makeCanvas, toTexture, mulberry32, tileFbm } from './textures.js';
+import { makeCanvas, toTexture, mulberry32, tileFbm, coarseField } from './textures.js';
 
 const clamp255 = (v) => (v < 0 ? 0 : v > 255 ? 255 : v);
 
@@ -8,11 +8,12 @@ function addNoise(ctx, w, h, amount, seed, fbmAmount = 0, period = 32) {
   const img = ctx.getImageData(0, 0, w, h);
   const d = img.data;
   const rnd = mulberry32(seed);
+  const low = fbmAmount ? coarseField(w, h, Math.max(2, period >> 3), (x, y) => tileFbm(x / period, y / period, w / period, h / period, 3, seed)) : null;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const k = (y * w + x) * 4;
       let n = (rnd() - 0.5) * amount;
-      if (fbmAmount) n += (tileFbm(x / period, y / period, w / period, h / period, 3, seed) - 0.5) * fbmAmount;
+      if (low) n += (low[y * w + x] - 0.5) * fbmAmount;
       d[k] = clamp255(d[k] + n);
       d[k + 1] = clamp255(d[k + 1] + n);
       d[k + 2] = clamp255(d[k + 2] + n);
@@ -418,7 +419,7 @@ export function flagsTexture() {
   const designs = [
     (x, y) => { checker(ctx, x, y); },
     (x, y) => { fill(ctx, x, y, '#e8202a'); diag(ctx, x, y, '#ffffff', 22); },
-    (x, y) => { fill(ctx, x, y, '#1550c8'); star(ctx, x + 64, y + 64, 34, '#ffd21a'); },
+    (x, y) => { fill(ctx, x, y, '#ff7a1a'); star(ctx, x + 64, y + 64, 34, '#1b2a4a'); },
     (x, y) => { fill(ctx, x, y, '#111111'); diag(ctx, x, y, '#ff7a1a', 40); },
     (x, y) => { fill(ctx, x, y, '#7b2cbf'); ring(ctx, x + 64, y + 64, 30, '#ffffff'); },
     (x, y) => { fill(ctx, x, y, '#0fb5a8'); chevron(ctx, x, y, '#ffffff'); },
