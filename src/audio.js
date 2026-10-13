@@ -267,7 +267,8 @@ export class AudioSystem {
   // ---------------------------------------------------------------- her kare
 
   update(dt, player, state) {
-    if (!this.ready) return;
+    // Bağlam askıdayken (otomatik oynatma engeli, gizli sekme) zaman durur; parametre olayları biriktirme.
+    if (!this.ready || this.ctx.state !== 'running') return;
     const ctx = this.ctx;
     const now = ctx.currentTime;
     // Yumuşatmalar ses saatine göre (duraklatmada oyun dt=0 gelir ama motor yine rölantiye inmeli).
@@ -398,7 +399,7 @@ export class AudioSystem {
   // ---------------------------------------------------------------- olaylar
 
   handleEvent(evt) {
-    if (!this.ready || !evt) return;
+    if (!this.ready || !evt || this.ctx.state !== 'running') return;
     const car = evt.car;
     const isMe = Boolean(car && car.isPlayer);
     const victimMe = Boolean(evt.victim && evt.victim.isPlayer);

@@ -143,6 +143,7 @@ export class HUD {
     this.menuStart = null;
     this.pause = null;
     this.pauseResume = null;
+    this.pauseRestart = null;
     this.results = null;
     this.resultsRestart = null;
     this.resultsAt = 0;
@@ -813,6 +814,7 @@ export class HUD {
       if (this.pause) this.pause.remove();
       this.pause = null;
       this.pauseResume = null;
+      this.pauseRestart = null;
       return;
     }
     if (!this.pause) {
