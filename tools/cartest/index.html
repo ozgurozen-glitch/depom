@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Car Test</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #05070d; color: #fff;
+      font-family: system-ui, sans-serif; touch-action: none; user-select: none; }
+    #game { position: fixed; inset: 0; }
+    #game canvas { display: block; width: 100%; height: 100%; }
+    #hud { position: fixed; inset: 0; pointer-events: none; }
+    #hud .interactive { pointer-events: auto; }
+    #dbg { position: absolute; left: 50%; top: 8px; transform: translateX(-50%); font: 12px/1.35 monospace;
+      white-space: pre; background: rgba(0,0,0,0.45); padding: 6px 10px; border-radius: 6px; }
+  </style>
+  <script type="importmap">
+    { "imports": { "three": "../../vendor/three/three.module.js", "three/addons/": "../../vendor/three/addons/" } }
+  </script>
+</head>
+<body>
+  <div id="game"></div>
+  <div id="hud"><div id="dbg"></div></div>
+  <script type="module" src="./harness.js"></script>
+</body>
+</html>
