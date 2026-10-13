@@ -1,22 +1,139 @@
-// YER TUTUCU: ışık ve zemin. Gerçek mekân tasarımı bunun yerini alacak.
+// Environment: "Riviera Sunset" — gün batımı gökyüzü, ışıklar, sis, PMREM ortam haritası, gölge takibi,
+// arazi, deniz ve mekân (binalar, palmiyeler, tünel, tribünler, yatlar...).
 import * as THREE from 'three';
+import { createSkyMaterial, createSkyMesh } from './track/sky.js';
+import { Terrain, createSea } from './track/terrain.js';
+import { buildScenery } from './track/scenery.js';
+
+// Görünen güneş (ufka yakın) ve gölge ışığının yönü (aynı azimut, daha yüksek — kısa/okunur gölgeler).
+const SUN_AZIMUTH = new THREE.Vector2(-0.79, 0.61).normalize(); // batı-güneybatı (x batı-, z güney+)
+const SUN_ELEVATION = THREE.MathUtils.degToRad(4.2);
+const LIGHT_ELEVATION = THREE.MathUtils.degToRad(27);
+const FOG_COLOR = 0xd9988c;
+const FOG_DENSITY = 0.00042;
+const SHADOW_HALF = 105;
+const SHADOW_MAP = 2048;
+
+function dirFrom(az, elev) {
+  return new THREE.Vector3(az.x * Math.cos(elev), Math.sin(elev), az.y * Math.cos(elev)).normalize();
+}
 
 export class Environment {
-  constructor(scene) {
-    scene.background = new THREE.Color(0x87a8d8);
-    scene.fog = new THREE.Fog(0x87a8d8, 200, 1500);
-    scene.add(new THREE.HemisphereLight(0xdde8ff, 0x445533, 1.2));
-    this.sun = new THREE.DirectionalLight(0xffffff, 2);
-    this.sun.position.set(200, 300, 100);
+  constructor(scene, renderer, track) {
+    this.scene = scene;
+    this.renderer = renderer;
+    this.track = track;
+    this.time = 0;
+
+    this.sunDir = dirFrom(SUN_AZIMUTH, SUN_ELEVATION);
+    this.lightDir = dirFrom(SUN_AZIMUTH, LIGHT_ELEVATION);
+    const fogColor = new THREE.Color(FOG_COLOR);
+    scene.fog = new THREE.FogExp2(fogColor, FOG_DENSITY);
+    scene.background = fogColor.clone();
+
+    // Gökyüzü
+    this.skyMat = createSkyMaterial({ sunDir: this.sunDir, fogColor });
+    this.sky = createSkyMesh(this.skyMat);
+    scene.add(this.sky);
+    this.buildEnvironmentMap();
+
+    // Işıklar
+    this.hemi = new THREE.HemisphereLight(0x9fb0ff, 0x6a4a3a, 0.65);
+    this.hemiBase = { intensity: this.hemi.intensity, sky: this.hemi.color.clone(), ground: this.hemi.groundColor.clone() };
+    scene.add(this.hemi);
+
+    this.sun = new THREE.DirectionalLight(0xffb27a, 3.1);
+    this.sun.castShadow = true;
+    this.sun.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
+    const sc = this.sun.shadow.camera;
+    sc.left = -SHADOW_HALF; sc.right = SHADOW_HALF; sc.top = SHADOW_HALF; sc.bottom = -SHADOW_HALF;
+    sc.near = 20; sc.far = 1400;
+    sc.updateProjectionMatrix();
+    this.sun.shadow.bias = -0.0004;
+    this.sun.shadow.normalBias = 0.08;
     scene.add(this.sun);
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(4000, 4000),
-      new THREE.MeshStandardMaterial({ color: 0x4a7a3a }),
-    );
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.1;
-    scene.add(ground);
+    scene.add(this.sun.target);
+    // Gölge kamerası ekseni (ışık uzayında kaydırma ve texel'e yaslama için)
+    this.lsRight = new THREE.Vector3().crossVectors(this.lightDir, new THREE.Vector3(0, 1, 0)).normalize();
+    this.lsUp = new THREE.Vector3().crossVectors(this.lsRight, this.lightDir).normalize();
+    this.shadowCenter = new THREE.Vector3();
+    this.prevFocus = null;
+    this.lead = new THREE.Vector3();
+    this.focusS = 0;
+    this.tunnelK = 0;
+
+    // Arazi ve deniz
+    this.terrain = new Terrain(track);
+    this.terrainMesh = this.terrain.buildMesh();
+    scene.add(this.terrainMesh);
+    this.sea = createSea();
+    scene.add(this.sea);
+
+    // Mekân
+    this.scenery = buildScenery({ scene, track, terrain: this.terrain, sunDir: this.sunDir, renderer });
   }
 
-  update() {}
+  buildEnvironmentMap() {
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const envScene = new THREE.Scene();
+    const envMat = createSkyMaterial({ sunDir: this.sunDir, fogColor: new THREE.Color(FOG_COLOR), envMode: true });
+    envScene.add(createSkyMesh(envMat));
+    const rt = pmrem.fromScene(envScene, 0, 0.1, 100);
+    this.scene.environment = rt.texture;
+    this.envTarget = rt;
+    envMat.dispose();
+    pmrem.dispose();
+  }
+
+  update(dt, focusPos) {
+    this.time += dt;
+    this.skyMat.uniforms.uTime.value = this.time;
+    this.sea.userData.uniforms.uTime.value = this.time;
+    if (!focusPos) return;
+
+    // Deniz düzlemi oyuncuyu izler (dalgalar dünya koordinatında sabit)
+    this.sea.position.x = Math.round(focusPos.x / 100) * 100;
+    this.sea.position.z = Math.round(focusPos.z / 100) * 100;
+
+    // Gölge kutusu: oyuncunun biraz önüne (hız yönünde) kaydır, texel'e yasla
+    if (this.prevFocus && dt > 0) {
+      const vx = (focusPos.x - this.prevFocus.x) / dt;
+      const vz = (focusPos.z - this.prevFocus.z) / dt;
+      const sp = Math.hypot(vx, vz);
+      if (sp < 150) {
+        const leadLen = Math.min(45, sp * 0.9);
+        const tx = sp > 0.5 ? (vx / sp) * leadLen : 0;
+        const tz = sp > 0.5 ? (vz / sp) * leadLen : 0;
+        const k = 1 - Math.exp(-dt * 2.5);
+        this.lead.x += (tx - this.lead.x) * k;
+        this.lead.z += (tz - this.lead.z) * k;
+      }
+    }
+    if (!this.prevFocus) this.prevFocus = new THREE.Vector3();
+    this.prevFocus.copy(focusPos);
+    const c = this.shadowCenter.set(focusPos.x + this.lead.x, focusPos.y, focusPos.z + this.lead.z);
+    const texel = (2 * SHADOW_HALF) / SHADOW_MAP;
+    const a = c.dot(this.lsRight);
+    const b = c.dot(this.lsUp);
+    c.addScaledVector(this.lsRight, Math.round(a / texel) * texel - a);
+    c.addScaledVector(this.lsUp, Math.round(b / texel) * texel - b);
+    this.sun.target.position.copy(c);
+    this.sun.position.copy(c).addScaledVector(this.lightDir, 700);
+    this.sun.target.updateMatrixWorld();
+
+    // Tünel ambiyansı: içerideyken ortam ışığı kısılır ve turuncuya döner
+    const pr = this.track.project(focusPos, this.focusS);
+    this.focusS = pr.s;
+    const t = this.track.tunnel;
+    const inside = pr.s > t.s0 + 8 && pr.s < t.s1 - 8 ? 1 : 0;
+    this.tunnelK += (inside - this.tunnelK) * (1 - Math.exp(-dt * 3));
+    const k = this.tunnelK;
+    this.hemi.intensity = this.hemiBase.intensity * (1 - k * 0.55);
+    this.hemi.color.copy(this.hemiBase.sky).lerp(TUNNEL_TINT, k * 0.8);
+    this.hemi.groundColor.copy(this.hemiBase.ground).lerp(TUNNEL_TINT, k * 0.6);
+
+    if (this.scenery) this.scenery.update(dt, this.time, focusPos);
+  }
 }
+
+const TUNNEL_TINT = new THREE.Color(0xff9a40);
