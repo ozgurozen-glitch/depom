@@ -77,6 +77,7 @@ export class Effects {
     this.fpsTime = 0;
     this.fpsFrames = 0;
     this.measuredFps = 0;
+    this.fpsLastNow = undefined;
 
     const size = renderer.getSize(new THREE.Vector2());
     this.width = Math.max(1, size.x);
@@ -167,13 +168,19 @@ export class Effects {
     return QUALITY[this.quality].name;
   }
 
+  // Ortalama FPS'i gerçek duvar saatiyle ölçer (oyunun dt'si 0.1 s'ye kırpıldığından ona güvenilmez).
   measureFps(dt) {
-    if (this.qualityLocked || this.quality === 0 || dt <= 0) return;
+    const now = performance.now();
+    const last = this.fpsLastNow;
+    this.fpsLastNow = now;
+    if (this.qualityLocked || this.quality === 0 || dt <= 0 || last === undefined) return;
+    const real = (now - last) / 1000;
+    if (real > 2) return; // sekme değişimi / uzun takılma: yok say
     if (this.fpsWarm > 0) {
-      this.fpsWarm -= dt;
+      this.fpsWarm -= real;
       return;
     }
-    this.fpsTime += dt;
+    this.fpsTime += real;
     this.fpsFrames++;
     if (this.fpsTime >= FPS_WINDOW) {
       this.measuredFps = this.fpsFrames / this.fpsTime;
