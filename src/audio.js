@@ -7,7 +7,7 @@
 // M tuşu sesi açar/kapatır.
 
 const MASTER_VOLUME = 0.85;
-const GEAR_TOP = [58, 102, 148, 196, 250, 360]; // km/s: her vitesin üst hızı
+const GEAR_TOP = [58, 102, 148, 196, 250, 360]; // km/sa: her vitesin üst hızı
 const DOWNSHIFT = 0.82;
 const MAX_VOICES = 40;
 

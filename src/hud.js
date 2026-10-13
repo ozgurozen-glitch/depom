@@ -191,7 +191,7 @@ export class HUD {
       <div class="nr-map"><canvas></canvas></div>
       <div class="nr-speedo">
         <div class="nr-gauge">${gaugeSvg()}
-          <div class="nr-speed"><div class="nr-speed-num nr-num">0</div><div class="nr-speed-unit">KM/S</div></div>
+          <div class="nr-speed"><div class="nr-speed-num nr-num">0</div><div class="nr-speed-unit">KM/SA</div></div>
         </div>
         <div class="nr-nitro-wrap">
           <div class="nr-burst nr-hidden"><div class="nr-burst-zone"></div><div class="nr-burst-mark"></div><div class="nr-burst-tip">PERFECT!</div></div>

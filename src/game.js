@@ -140,6 +140,8 @@ export class Game {
     this.countdown = COUNTDOWN_SECONDS;
     this.chaseCam.setMode('countdown');
     this.controls.setTouchVisible(true);
+    this.hud.showCountdown(String(COUNTDOWN_SECONDS));
+    this.frameEvents.push({ type: 'countdown', car: this.player, value: COUNTDOWN_SECONDS });
   }
 
   restart() {
