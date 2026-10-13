@@ -381,7 +381,7 @@ export class Game {
   routeCameraShake(evt) {
     if (evt.car !== this.player && evt.victim !== this.player) return;
     switch (evt.type) {
-      case 'wall_hit': this.chaseCam.shake(0.3 + evt.strength * 0.5); break;
+      case 'wall_hit': if (evt.strength > 0.15) this.chaseCam.shake(evt.strength * 0.7); break;
       case 'bump': this.chaseCam.shake(0.2 + evt.strength * 0.4); break;
       case 'takedown': this.chaseCam.shake(0.6); break;
       case 'land': if (evt.hard) this.chaseCam.shake(0.4); break;
