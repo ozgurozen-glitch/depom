@@ -305,35 +305,44 @@ export function buildCity(ctx) {
 function finalizeCity(ctx, buildings, signs) {
   const { group, rnd } = ctx;
   const uniforms = { uTime: { value: 0 } };
-  const boxGeo = new THREE.BoxGeometry(1, 1, 1);
-  boxGeo.translate(0, 0.5, 0);
   const mat = createFacadeMaterial(uniforms);
-  const mesh = new THREE.InstancedMesh(boxGeo, mat, buildings.length);
-  const attr = new Float32Array(buildings.length * 4);
   const m4 = new THREE.Matrix4();
   const q = new THREE.Quaternion();
   const e = new THREE.Euler();
   const p = new THREE.Vector3();
   const sc = new THREE.Vector3();
-  buildings.forEach((b, i) => {
-    e.set(0, b.yaw, 0);
-    q.setFromEuler(e);
-    m4.compose(p.set(b.x, b.y, b.z), q, sc.set(b.d, b.h, b.w));
-    mesh.setMatrixAt(i, m4);
-    mesh.setColorAt(i, b.tint);
-    attr[i * 4] = b.style;
-    attr[i * 4 + 1] = b.seed;
-    attr[i * 4 + 2] = b.lit;
-    attr[i * 4 + 3] = b.hue;
-  });
-  boxGeo.setAttribute('aBld', new THREE.InstancedBufferAttribute(attr, 4));
-  mesh.instanceMatrix.needsUpdate = true;
-  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  mesh.computeBoundingSphere();
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  mesh.name = 'buildings';
-  group.add(mesh);
+  // Yola yakın binalar gölge haritasına çizilir; uzaktakiler (silüet) ayrı örnekte, gölgesiz
+  const near = [];
+  const far = [];
+  for (const b of buildings) (ctx.dist(b.x, b.z) < 110 ? near : far).push(b);
+  const makeSet = (list, name, shadow) => {
+    const geo = new THREE.BoxGeometry(1, 1, 1);
+    geo.translate(0, 0.5, 0);
+    const mesh = new THREE.InstancedMesh(geo, mat, Math.max(1, list.length));
+    const attr = new Float32Array(Math.max(1, list.length) * 4);
+    list.forEach((b, i) => {
+      e.set(0, b.yaw, 0);
+      q.setFromEuler(e);
+      m4.compose(p.set(b.x, b.y, b.z), q, sc.set(b.d, b.h, b.w));
+      mesh.setMatrixAt(i, m4);
+      mesh.setColorAt(i, b.tint);
+      attr[i * 4] = b.style;
+      attr[i * 4 + 1] = b.seed;
+      attr[i * 4 + 2] = b.lit;
+      attr[i * 4 + 3] = b.hue;
+    });
+    geo.setAttribute('aBld', new THREE.InstancedBufferAttribute(attr, 4));
+    mesh.count = list.length;
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    mesh.castShadow = shadow;
+    mesh.receiveShadow = shadow;
+    mesh.name = name;
+    group.add(mesh);
+  };
+  makeSet(near, 'buildings', true);
+  makeSet(far, 'buildings-far', false);
 
   // LED taç bantları ve çatı ikaz ışıkları (yüksek binalar)
   const crowns = buildings.filter((b) => b.h > 60 && b.style !== STYLE.LED && rnd() < 0.55);
@@ -445,7 +454,7 @@ function buildPixelTower(ctx, x, z) {
   const coreGeo = mergeGeometries([...core.map((g) => g.toNonIndexed()), inner.toNonIndexed()], false);
   const tex = towerWindowTextures();
   const shellMat = new THREE.MeshStandardMaterial({
-    map: tex.map, emissiveMap: tex.emissiveMap, emissive: 0xffffff, emissiveIntensity: 0.9,
+    map: tex.map, emissiveMap: tex.emissiveMap, emissive: 0xffffff, emissiveIntensity: 0.55,
     roughness: 0.2, metalness: 0.6,
   });
   const coreMat = new THREE.MeshStandardMaterial({

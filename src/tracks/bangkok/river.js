@@ -139,7 +139,7 @@ export function buildRiver(ctx) {
   ground.translate(0, GROUND_Y, 0);
   const gTex = groundTexture();
   gTex.repeat.set(1 / 32, 1 / 32);
-  const groundMesh = new THREE.Mesh(ground, new THREE.MeshStandardMaterial({ map: gTex, roughness: 0.55, metalness: 0 }));
+  const groundMesh = new THREE.Mesh(ground, new THREE.MeshStandardMaterial({ map: gTex, roughness: 0.75, metalness: 0, envMapIntensity: 0.35 }));
   groundMesh.receiveShadow = true;
   groundMesh.name = 'ground';
   group.add(groundMesh);
@@ -218,8 +218,8 @@ export function buildRiver(ctx) {
     sIdx.push(base, base + 1, base + 2, base + 1, base + 3, base + 2);
   };
   if (ctx.temple) {
-    addWaterStreak(ctx.temple.x + 70, ctx.temple.z, 260, 46, new THREE.Color(0.9, 0.55, 0.2));
-    addWaterStreak(ctx.temple.x + 70, ctx.temple.z, 220, 14, new THREE.Color(1.2, 0.8, 0.35));
+    addWaterStreak(ctx.temple.x + 72, ctx.temple.z, 250, 40, new THREE.Color(0.22, 0.12, 0.04));
+    addWaterStreak(ctx.temple.x + 72, ctx.temple.z, 200, 10, new THREE.Color(0.4, 0.24, 0.08));
   }
   const streakCols = [[0.8, 0.5, 0.25], [0.25, 0.6, 0.9], [0.9, 0.2, 0.6], [0.7, 0.7, 0.75]];
   for (let k = 0; k < 70; k++) {

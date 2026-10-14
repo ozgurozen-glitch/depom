@@ -183,8 +183,8 @@ export function wetAsphaltTextures({ widthM = 20, lengthM = 24 } = {}) {
     const p = puddle[y * RW + x];
     let v = 0.36 - Math.min(1, wear) * 0.1 + (rr() - 0.5) * 0.08;
     const edge = Math.abs(lat) > widthM / 2 - 1.6 ? 0.35 : 0; // kenarlarda su birikir
-    const pud = THREE.MathUtils.smoothstep(p + edge * 0.5, 0.56, 0.64);
-    v = v * (1 - pud) + 0.035 * pud;
+    const pud = THREE.MathUtils.smoothstep(p + edge * 0.5, 0.56, 0.7);
+    v = v * (1 - pud) + 0.07 * pud;
     const g = clamp255(v * 255);
     out[0] = g; out[1] = g; out[2] = g;
   });
@@ -550,13 +550,14 @@ export function towerWindowTextures() {
   em.ctx.fillStyle = '#000';
   em.ctx.fillRect(0, 0, S, S);
   const rnd = mulberry32(5);
-  for (let j = 0; j < 2; j++) {
-    for (let i = 0; i < 2; i++) {
-      ctx.fillStyle = '#5d7a92';
-      ctx.fillRect(i * 64 + 3, j * 64 + 4, 58, 48);
+  // 4 x 4 cam (karo = 6 m küp yüzü: 2 kat x 2 sütun, her biri 2x2 cam)
+  for (let j = 0; j < 4; j++) {
+    for (let i = 0; i < 4; i++) {
+      ctx.fillStyle = '#3d5466';
+      ctx.fillRect(i * 32 + 2, j * 32 + 3, 28, 24);
       const v = rnd();
-      em.ctx.fillStyle = v < 0.55 ? '#ffe2b0' : v < 0.8 ? '#cfe6ff' : '#3a3020';
-      em.ctx.fillRect(i * 64 + 4, j * 64 + 6, 56, 44);
+      em.ctx.fillStyle = v < 0.3 ? '#ffd8a0' : v < 0.45 ? '#bcd8f0' : v < 0.6 ? '#4a3a28' : '#0c0c10';
+      em.ctx.fillRect(i * 32 + 3, j * 32 + 4, 26, 22);
     }
   }
   return {

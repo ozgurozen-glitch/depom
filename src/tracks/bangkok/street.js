@@ -205,9 +205,9 @@ export function buildStreet(ctx) {
     const bx = x + Math.sin(yaw) * -0.45;
     const bz = z + Math.cos(yaw) * -0.45;
     const warm = rnd() < 0.75;
-    const bc = warm ? new THREE.Color(4.0, 2.3, 0.9) : new THREE.Color(2.4, 3.6, 3.0);
+    const bc = warm ? new THREE.Color(2.4, 1.4, 0.55) : new THREE.Color(1.3, 1.9, 1.6);
     bulbs.push({ x: bx, y: f.y + 0.14 + 1.85, z: bz, yaw: 0, color: bc });
-    ctx.glows.push({ x: bx, y: f.y + 0.14 + 1.85, z: bz, color: bc.clone().multiplyScalar(0.12) });
+    ctx.glows.push({ x: bx, y: f.y + 0.14 + 1.85, z: bz, color: bc.clone().multiplyScalar(0.09) });
     if (rnd() < 0.35) ctx.streaks.push({ s, lateral: side * 8.6, len: 12, width: 1.1, color: new THREE.Color(warm ? 0.6 : 0.4, warm ? 0.38 : 0.55, warm ? 0.18 : 0.5) });
   };
   for (let s = sec.chinatown.s0 + 8; s < sec.sukhumvit.s0 - 20; s += rr(7, 12)) addStall(s, rnd() < 0.5 ? -1 : 1, rr(13.2, 14.6));
@@ -234,7 +234,7 @@ export function buildStreet(ctx) {
       ctx.frame(s, f);
       const lat = side * 16.4;
       const c = awnCols[Math.floor(rnd() * awnCols.length)];
-      const k = rr(0.45, 0.75);
+      const k = rr(0.26, 0.46);
       awnings.push({
         x: f.x + f.rx * lat, y: f.y + 0.14, z: f.z + f.rz * lat,
         yaw: f.yaw + (side > 0 ? Math.PI / 2 : -Math.PI / 2), w: rr(3.0, 3.6),
@@ -267,15 +267,15 @@ export function buildStreet(ctx) {
       prev = p;
       if (k % 2 === 1) {
         lanterns.push({ x: p[0], y: p[1] - 0.75, z: p[2], yaw: f.yaw, scale: rr(0.9, 1.1) });
-        if (k % 4 === 1) ctx.glows.push({ x: p[0], y: p[1] - 0.75, z: p[2], color: new THREE.Color(0.5, 0.06, 0.02) });
+        if (k % 4 === 1) ctx.glows.push({ x: p[0], y: p[1] - 0.75, z: p[2], color: new THREE.Color(0.28, 0.04, 0.015) });
       }
     }
     // Yansıma: fener dizisinin altında kırmızı parıltı
-    ctx.streaks.push({ s, lateral: rr(-4, 4), len: 16, width: 3.2, color: new THREE.Color(0.7, 0.08, 0.04) });
+    if (rnd() < 0.5) ctx.streaks.push({ s, lateral: rr(-4, 4), len: 16, width: 3.2, color: new THREE.Color(0.45, 0.05, 0.03) });
   }
-  const lanternGeo = new THREE.SphereGeometry(0.42, 10, 8);
+  const lanternGeo = new THREE.SphereGeometry(0.32, 10, 8);
   lanternGeo.scale(1, 1.25, 1);
-  const lanternMesh = makeInstanced(lanternGeo, new THREE.MeshBasicMaterial({ color: new THREE.Color(3.2, 0.32, 0.12) }), lanterns, placeYaw);
+  const lanternMesh = makeInstanced(lanternGeo, new THREE.MeshBasicMaterial({ color: new THREE.Color(1.5, 0.09, 0.035) }), lanterns, placeYaw);
   lanternMesh.name = 'lanterns';
   group.add(lanternMesh);
   if (wirePos.length) {
@@ -288,7 +288,7 @@ export function buildStreet(ctx) {
   // Fener bölgesinde gerçek ışık noktaları (kırmızı)
   for (let s = sec.chinatown.s0 + 30; s < sec.sukhumvit.s0 - 20; s += 45) {
     ctx.frame(s, f);
-    const spot = ctx.addLightSpot(f.x, f.y + 7.5, f.z, 0xff3a20, 1.0);
+    const spot = ctx.addLightSpot(f.x, f.y + 7.5, f.z, 0xff5a30, 0.6);
     if (spot) spot.fromLamp = true;
   }
 
@@ -370,7 +370,7 @@ function buildGlows(ctx) {
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
   const mat = new THREE.PointsMaterial({
-    map: softGlowTexture(), size: 3.2, sizeAttenuation: true, vertexColors: true, transparent: true,
+    map: softGlowTexture(), size: 2.4, sizeAttenuation: true, vertexColors: true, transparent: true,
     depthWrite: false, blending: THREE.AdditiveBlending,
   });
   const pts = new THREE.Points(geo, mat);

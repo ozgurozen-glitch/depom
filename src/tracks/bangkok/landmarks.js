@@ -64,12 +64,12 @@ export function buildBts(ctx) {
   const lampParts = [];
   for (let x = BTS_LINE.x0 + 6; x < BTS_LINE.x1; x += 12) {
     for (const side of [-1, 1]) {
-      const g = new THREE.BoxGeometry(2.2, 0.08, 0.35);
-      g.translate(x, deckBottom - 0.05, z0 + side * 3.6);
+      const g = new THREE.BoxGeometry(1.4, 0.06, 0.2);
+      g.translate(x, deckBottom - 0.04, z0 + side * 3.6);
       lampParts.push(g);
     }
   }
-  const lamps = new THREE.Mesh(mergeGeometries(lampParts, false), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.3, 1.25, 1.1) }));
+  const lamps = new THREE.Mesh(mergeGeometries(lampParts, false), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.1, 1.05, 0.95) }));
   lamps.name = 'bts-underlights';
   group.add(lamps);
 
@@ -96,12 +96,12 @@ export function buildBts(ctx) {
   // İstasyonun ışıklı cam bandı (emissive şerit iki yüzde)
   const glow = [];
   for (const side of [-1, 1]) {
-    const g = new THREE.PlaneGeometry(stLen - 2, 2.6);
+    const g = new THREE.PlaneGeometry(stLen - 2, 1.4);
     if (side < 0) g.rotateY(Math.PI);
-    g.translate(scx, stY0 + stH - 2.4, z0 + side * 13.05);
+    g.translate(scx, stY0 + stH - 2.6, z0 + side * 13.05);
     glow.push(g);
   }
-  const glowMesh = new THREE.Mesh(mergeGeometries(glow, false), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.6, 1.75, 1.9) }));
+  const glowMesh = new THREE.Mesh(mergeGeometries(glow, false), new THREE.MeshBasicMaterial({ color: new THREE.Color(0.75, 0.85, 0.95) }));
   glowMesh.name = 'bts-station-glass';
   group.add(glowMesh);
   const roofMesh = new THREE.Mesh(roof, new THREE.MeshLambertMaterial({ color: 0x5a6068, side: THREE.DoubleSide }));
@@ -306,7 +306,7 @@ function bakeFloodlight(geo, baseCol, topCol, H, y0) {
       lit += Math.max(0, nor.getX(i) * lights[k].x + nor.getY(i) * lights[k].y + nor.getZ(i) * lights[k].z) * (k === 0 ? 0.9 : 0.45);
     }
     // Projektörler tabandan vurur: aşağısı daha parlak
-    const flood = 0.55 + 1.1 * (1 - hy) ** 1.6;
+    const flood = 0.38 + 0.55 * (1 - hy) ** 1.6;
     c.multiplyScalar(lit * flood);
     col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
   }
@@ -318,16 +318,16 @@ function bakeFloodlight(geo, baseCol, topCol, H, y0) {
 export function buildTemple(ctx) {
   const { group } = ctx;
   const z = 120;
-  const x = ctx.bankX(z) - RIVER.width - 110;
+  const x = ctx.bankX(z) - RIVER.width - 72;
   ctx.temple = { x, z };
-  ctx.reserve(x, z, 150);
-  const gold = new THREE.Color(1.15, 0.78, 0.36);
-  const goldTop = new THREE.Color(1.5, 1.05, 0.5);
-  const white = new THREE.Color(0.95, 0.86, 0.74);
+  ctx.reserve(x, z, 120);
+  const gold = new THREE.Color(0.72, 0.4, 0.12);
+  const goldTop = new THREE.Color(0.95, 0.62, 0.24);
+  const white = new THREE.Color(0.55, 0.47, 0.38);
   const parts = [];
   const add = (g, base, top, H, y0) => parts.push(bakeFloodlight(g, base, top, H, y0));
   // Kaide terasları
-  const terr = [[74, 5], [58, 5], [44, 5], [32, 4]];
+  const terr = [[96, 6], [76, 6], [58, 6], [42, 5]];
   let y = GROUND_Y;
   for (const [w, h] of terr) {
     const g = new THREE.BoxGeometry(w, h, w);
@@ -340,29 +340,29 @@ export function buildTemple(ctx) {
     y += h;
   }
   // Merkez kule
-  const H = 64;
-  const main = new THREE.LatheGeometry(prangProfile(H, 13), 12);
+  const H = 82;
+  const main = new THREE.LatheGeometry(prangProfile(H, 17), 12);
   main.translate(x, y, z);
   add(main, gold, goldTop, H + y, GROUND_Y);
-  const spire = new THREE.CylinderGeometry(0.15, 0.5, 9, 6);
-  spire.translate(x, y + H + 3, z);
+  const spire = new THREE.CylinderGeometry(0.2, 0.7, 12, 6);
+  spire.translate(x, y + H + 4, z);
   add(spire, goldTop, goldTop, H + y, GROUND_Y);
   // Köşe kuleleri (ilk teras üstünde)
-  const y1 = GROUND_Y + 5;
+  const y1 = GROUND_Y + 6;
   for (const [dx, dz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
-    const hh = 28;
-    const g = new THREE.LatheGeometry(prangProfile(hh, 5.5), 10);
-    g.translate(x + dx * 30, y1, z + dz * 30);
+    const hh = 36;
+    const g = new THREE.LatheGeometry(prangProfile(hh, 7), 10);
+    g.translate(x + dx * 39, y1, z + dz * 39);
     add(g, gold, goldTop, hh + 6, GROUND_Y);
   }
   // Orta yanlarda küçük köşkler (mondop): kutu + piramit çatı
   for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
-    const b = new THREE.BoxGeometry(7, 6, 7);
-    b.translate(x + dx * 33, y1 + 3, z + dz * 33);
+    const b = new THREE.BoxGeometry(9, 8, 9);
+    b.translate(x + dx * 43, y1 + 4, z + dz * 43);
     add(b, white, white, 30, GROUND_Y);
-    const r = new THREE.ConeGeometry(5.6, 9, 4);
+    const r = new THREE.ConeGeometry(7.2, 12, 4);
     r.rotateY(Math.PI / 4);
-    r.translate(x + dx * 33, y1 + 6 + 4.5, z + dz * 33);
+    r.translate(x + dx * 43, y1 + 8 + 6, z + dz * 43);
     add(r, gold, goldTop, 30, GROUND_Y);
   }
   const geo = mergeGeometries(parts, false);
@@ -372,11 +372,11 @@ export function buildTemple(ctx) {
   // Altın hare (additive sprite)
   const glowMat = new THREE.SpriteMaterial({
     map: softGlowTexture(), color: new THREE.Color(1.0, 0.62, 0.25), transparent: true, depthWrite: false,
-    blending: THREE.AdditiveBlending, opacity: 0.55,
+    blending: THREE.AdditiveBlending, opacity: 0.16,
   });
   const halo = new THREE.Sprite(glowMat);
-  halo.position.set(x, y + 22, z);
-  halo.scale.set(150, 150, 1);
+  halo.position.set(x, y + 34, z);
+  halo.scale.set(120, 120, 1);
   halo.name = 'temple-halo';
   group.add(halo);
   return { x, z, height: y + H };
@@ -433,7 +433,7 @@ export function buildGantry(ctx) {
   }
   const stg = mergeGeometries(strips, false);
   stg.applyMatrix4(m);
-  const stripMesh = new THREE.Mesh(stg, new THREE.MeshBasicMaterial({ color: new THREE.Color(2.6, 0.4, 2.0), side: THREE.DoubleSide }));
+  const stripMesh = new THREE.Mesh(stg, new THREE.MeshBasicMaterial({ color: new THREE.Color(1.5, 0.25, 1.2), side: THREE.DoubleSide }));
   stripMesh.name = 'gantry-led';
   group.add(stripMesh);
   ctx.addLightSpot(f.x, f.y + 9, f.z, 0xff60d0, 0.8);

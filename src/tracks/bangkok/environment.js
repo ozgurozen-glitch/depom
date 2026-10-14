@@ -122,11 +122,11 @@ export class BangkokEnvironment {
     // Birkaç parlak neon panel (yakın yansımalar için belirgin renk lekeleri)
     const panelGeo = new THREE.PlaneGeometry(1, 1);
     const panels = [
-      [new THREE.Color(4, 0.5, 3), 0.3, 0.12, 0.9, 0.35],
-      [new THREE.Color(0.4, 3, 4), 1.9, 0.08, 1.1, 0.25],
-      [new THREE.Color(4, 2.2, 0.5), 3.4, 0.1, 0.8, 0.3],
-      [new THREE.Color(3.5, 0.4, 0.8), 4.6, 0.15, 0.7, 0.4],
-      [new THREE.Color(1.6, 0.8, 4), 5.6, 0.06, 1.0, 0.22],
+      [new THREE.Color(2, 0.25, 1.5), 0.3, 0.12, 0.9, 0.35],
+      [new THREE.Color(0.2, 1.5, 2), 1.9, 0.08, 1.1, 0.25],
+      [new THREE.Color(2, 1.1, 0.25), 2.6, 0.1, 0.8, 0.3],
+      [new THREE.Color(1.8, 0.2, 0.4), 4.6, 0.15, 0.7, 0.4],
+      [new THREE.Color(0.8, 0.4, 2), 5.6, 0.06, 1.0, 0.22],
     ];
     const mats = [];
     for (const [c, az, el, w, h] of panels) {
@@ -148,8 +148,10 @@ export class BangkokEnvironment {
     pmrem.dispose();
   }
 
-  /** Sahneye eklenmemiş GPU kaynakları: gökyüzü küp hedefi ve PMREM hedefi. */
+  /** Sahneye eklenmemiş GPU kaynakları: gökyüzü küp hedefi, PMREM hedefi ve ayın gölge haritası. */
   dispose() {
+    this.moon.dispose();
+    for (const p of this.points) p.light.dispose();
     if (this.skyTarget) this.skyTarget.dispose();
     if (this.envTarget) this.envTarget.dispose();
     this.skyTarget = null;

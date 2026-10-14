@@ -83,6 +83,7 @@ export class Environment {
     });
     const cubeCam = new THREE.CubeCamera(0.1, 100, rt);
     cubeCam.update(this.renderer, skyScene);
+    skyScene.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
     mat.dispose();
     this.skyTarget = rt;
     this.scene.background = rt.texture;
@@ -96,6 +97,7 @@ export class Environment {
     const rt = pmrem.fromScene(envScene, 0, 0.1, 100);
     this.scene.environment = rt.texture;
     this.envTarget = rt;
+    envScene.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
     envMat.dispose();
 
     // Tünel içi ortam haritası: koyu oda + tavanda turuncu ışık şeritleri (araba boyasında yansıyan
@@ -120,9 +122,17 @@ export class Environment {
     pmrem.dispose();
   }
 
-  /** Sahneye eklenmemiş GPU kaynakları (gökyüzü küpü, PMREM hedefleri). Game.unloadTrack çağırır. */
+  /** Sahneye eklenmemiş GPU kaynakları (gökyüzü küpü, PMREM hedefleri, gölge haritası). Game.unloadTrack çağırır. */
   dispose() {
     for (const rt of [this.skyTarget, this.envTarget, this.tunnelEnvTarget]) if (rt) rt.dispose();
+    this.sun.dispose(); // gölge haritası render target'ı
+    // onBeforeCompile uniform'larındaki dokular (bina cephe atlası)
+    if (this.scenery) {
+      this.scenery.group.traverse((o) => {
+        const tex = o.material && o.material.userData && o.material.userData.textures;
+        if (tex) for (const t of tex) t.dispose();
+      });
+    }
     this.skyTarget = null;
     this.envTarget = null;
     this.tunnelEnvTarget = null;
