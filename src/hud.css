@@ -828,8 +828,6 @@
   }
 }
 
-/* ------------------------------------------------------------------ duyarlı düzen */
-
 
 /* ------------------------------------------------------------------ garaj menüsü */
 
@@ -1326,7 +1324,7 @@
   .nr-garage {
     top: calc(6px + var(--safe-t));
     bottom: calc(6px + var(--safe-b));
-    width: min(440px, 58vw);
+    width: min(410px, 52vw);
   }
 
   .nr-garage-head {
@@ -1380,7 +1378,7 @@
 }
 
 .nr-slip-text {
-  font-size: clamp(10px, 2vmin, 16px);
+  font-size: clamp(11px, 2.5vmin, 20px);
   letter-spacing: 0.2em;
   color: #eafdff;
   text-shadow: 0 0 10px rgba(0, 229, 255, 0.95), 0 2px 0 rgba(0, 0, 0, 0.5);
@@ -1418,7 +1416,8 @@
   white-space: nowrap;
   pointer-events: none;
   opacity: 0;
-  transform: translateX(-50%) skewX(-8deg);
+  translate: -50% 0;
+  transform: skewX(-8deg);
   transition: opacity 0.2s ease;
   font-size: clamp(11px, 2.1vmin, 17px);
   letter-spacing: 0.14em;
@@ -1489,6 +1488,8 @@
 }
 
 .nr-res-badge-t {
+  position: relative;
+  z-index: 1;
   display: inline-block;
   transform: skewX(12deg);
 }
@@ -1592,7 +1593,9 @@
   }
 
   .nr-camview {
-    top: calc(84px + var(--safe-t));
+    top: calc(88px + var(--safe-t));
+    left: calc(10px + var(--safe-l));
+    translate: none;
   }
 }
 

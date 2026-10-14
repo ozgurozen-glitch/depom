@@ -649,8 +649,8 @@ export class HUD {
       this.camEl.classList.add('nr-camview-on');
     }
     animate(this.camEl, [
-      { transform: 'translateX(-50%) skewX(-8deg) scale(1.14)' },
-      { transform: 'translateX(-50%) skewX(-8deg) scale(1)' },
+      { transform: 'skewX(-8deg) scale(1.14)' },
+      { transform: 'skewX(-8deg) scale(1)' },
     ], { duration: 200, easing: 'ease-out' });
   }
 
