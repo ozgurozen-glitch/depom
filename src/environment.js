@@ -120,6 +120,14 @@ export class Environment {
     pmrem.dispose();
   }
 
+  /** Sahneye eklenmemiş GPU kaynakları (gökyüzü küpü, PMREM hedefleri). Game.unloadTrack çağırır. */
+  dispose() {
+    for (const rt of [this.skyTarget, this.envTarget, this.tunnelEnvTarget]) if (rt) rt.dispose();
+    this.skyTarget = null;
+    this.envTarget = null;
+    this.tunnelEnvTarget = null;
+  }
+
   update(dt, focusPos) {
     this.time += dt;
     this.sea.userData.uniforms.uTime.value = this.time;
