@@ -10,7 +10,7 @@ import { PROFILES } from '../../src/ai/profile.js';
 import { TUNING } from '../../src/ai.js';
 import { TRACK_IDS } from './tracks.mjs';
 
-const opt = { set: '', tune: '', mode: 'both', track: 'oval,hard', difficulty: 'easy,normal,hard', laps: '2', models: 'vortex,speedster,gripper', bots: '7', radius: '', player: 'normal', botIndex: '0', reps: '1', json: false, maxTime: '0' };
+const opt = { cold: '0', set: '', tune: '', mode: 'both', track: 'oval,hard', difficulty: 'easy,normal,hard', laps: '2', models: 'vortex,speedster,gripper', bots: '7', radius: '', player: 'normal', botIndex: '0', reps: '1', json: false, maxTime: '0' };
 const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i++) {
   const k = argv[i].replace(/^--/, '');
@@ -29,7 +29,7 @@ for (const kv of list0(opt.tune || '')) {
 }
 function list0(s) { return String(s).split(',').filter(Boolean); }
 const list = (s) => String(s).split(',').filter(Boolean);
-const tracks = opt.track === 'all' ? TRACK_IDS : list(opt.track);
+const tracks = opt.track === 'all' ? [...TRACK_IDS, 'riviera'] : list(opt.track);
 const diffs = list(opt.difficulty);
 const models = list(opt.models);
 const laps = Number(opt.laps);
@@ -55,7 +55,7 @@ async function soloBlock(trackId) {
       const laps_ = [];
       let agg = null;
       for (let r = 0; r < reps; r++) {
-        const res = await runRace({ track: trackId, trackOpts, laps, difficulty: diff, models: [model], solo: true, botIndex: Number(opt.botIndex), maxTime: Number(opt.maxTime) });
+        const res = await runRace({ track: trackId, trackOpts, laps, difficulty: diff, models: [model], solo: true, botIndex: Number(opt.botIndex), maxTime: Number(opt.maxTime), cold: opt.cold === '1' });
         const e = res.entries[0];
         laps_.push(...e.m.lapTimes);
         agg = agg ? { ...agg, m: Object.fromEntries(Object.keys(e.m).map((k) => [k, typeof e.m[k] === 'number' ? (agg.m[k] || 0) + e.m[k] : e.m[k]])) } : { m: { ...e.m } };
@@ -82,7 +82,7 @@ async function raceBlock(trackId) {
     let lapAll = [];
     let totals = { wall: 0, hard: 0, wreck: 0, wreckWall: 0, wreckTd: 0, stuck: 0, reverse: 0, td: 0, nf: [], nStart: 0, nPerf: 0, nShock: 0, wb: 0, wm: 0, wc: 0, tdI: 0, tdS: 0, tdA: 0, tdP: 0, attack: 0, follow: 0, swing: 0, shock: 0, lapse: 0, recover: 0, ot: {}, bump: 0, slip: 0, slipT: 0, def: 0, ovt: 0, fin: 0, tot: 0, us: [], plPlace: [] };
     for (let r = 0; r < reps; r++) {
-      const res = await runRace({ track: trackId, trackOpts, laps, difficulty: diff, bots, models, player: opt.player, maxTime: Number(opt.maxTime) });
+      const res = await runRace({ track: trackId, trackOpts, laps, difficulty: diff, bots, models, player: opt.player, maxTime: Number(opt.maxTime), cold: opt.cold === '1' });
       const bs = res.entries.filter((e) => e.bot);
       for (const e of bs) lapAll.push(...e.m.lapTimes);
       totals.wall += sumStat(bs, 'wallHits');

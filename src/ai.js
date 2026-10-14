@@ -23,6 +23,7 @@ export const TUNING = {
   slopeK: 4, // hedef yanal eğim sınırı = slopeK / hız (m/s) → yüksek hızda yola göre en çok ~5° sapma
   slopeMin: 0.07,
   slopeMax: 0.3,
+  capUnknown: 0.88, // gözlem yokken kapasite payı çarpanı (gözlem arttıkça 1'e yaklaşır)
   steerSlew: 8, // 1/s, direksiyon çıkışının en hızlı değişimi
   steerFilterTau: 0.1, // s, arabaya uygulanan direksiyonun tahmini (öğrenme için)
   latAccelBase: 24, // m/s², en düşük yetenekte viraj ivmesi
@@ -48,6 +49,10 @@ const smooth01 = (x) => {
   const t = clamp(x, 0, 1);
   return t * t * (3 - 2 * t);
 };
+
+// Rampa başına öğrenilen uçuş mesafesi katsayısı (mesafe = k·hız²); tüm botlar paylaşır.
+const rampFlightK = new WeakMap();
+const GRAVITY_GUESS = 17; // m/s², ön kabul
 
 // Aynı kurbana aynı anda tek bir bot saldırsın.
 const attackClaims = new WeakMap();
@@ -186,6 +191,14 @@ export class BotDriver {
     this.rampKey = null;
     this.rampLap = -1;
     this.rampTake = false;
+    this.rampLat = NaN;
+    this.rampHold = false;
+    this.rampHoldS = 0;
+    this.avoidRampLat = NaN;
+    this.wasAir = false;
+    this.flightS0 = 0;
+    this.flightV0 = 0;
+    this.flightRamp = null;
 
     this.nitroHold = false;
     this.nitroHeldT = 0;
@@ -263,6 +276,7 @@ export class BotDriver {
     const myHalf = Number.isFinite(car.halfWidth) ? car.halfWidth : 1;
 
     this.learn(dt, vx, vz, vH, vF, yaw, lat, halfW);
+    this.trackFlight(s, vF);
     model.observeFleet(ctx, dt, line);
     if (Number.isFinite(car.maxSpeed) && car.maxSpeed > 20) model.setTopSpeed(car.maxSpeed);
 
@@ -304,7 +318,7 @@ export class BotDriver {
     else if (this.otState !== OT_NONE) overrideTarget = this.otLat;
     else if (this.defendActive) overrideTarget = this.defendCur;
     else {
-      const rampLat = this.updateRamp(s, lim);
+      const rampLat = this.updateRamp(s, vF, lim);
       if (!Number.isNaN(rampLat)) overrideTarget = rampLat;
       else {
         const pickLat = this.updatePickup(dt, s, lat, vF, lim, kNear);
@@ -377,6 +391,11 @@ export class BotDriver {
       steer = kappaCmd / model.steerGain(Math.max(vH, 4));
     }
     steer = clamp(steer + this.steerNoise, -1, 1);
+    if (car.airborne) {
+      // havada burnu yola paralel tut (inişte hız vektörü gövdeye hizalanır; yan inersek duvara gideriz)
+      const e = wrapAngle(yaw - Math.atan2(line.tx[si], line.tz[si]));
+      steer = clamp(2.5 * e, -1, 1);
+    }
 
     // --- Hız planı -------------------------------------------------------------------------------------
     let vTarget = this.plannedSpeed(s, vF, aLat, capMargin);
@@ -588,8 +607,11 @@ export class BotDriver {
   cornerSpeed(k, aLat, capMargin) {
     if (k < 1e-5) return 1e3;
     let v = Math.sqrt(aLat / k);
+    const model = this.model;
     for (let it = 0; it < 3; it++) {
-      const vc = Math.sqrt((capMargin * this.model.lateralCapacity(v)) / k);
+      // bu hızda araba henüz az gözlendiyse (ilk tur, yeni hız aralığı) kapasite tahminine daha az güven
+      const m = capMargin * (TUNING.capUnknown + (1 - TUNING.capUnknown) * model.confidence(v));
+      const vc = Math.sqrt((m * model.lateralCapacity(v)) / k);
       if (vc >= v) break;
       v = vc;
     }
@@ -1167,6 +1189,9 @@ export class BotDriver {
       const lim2 = Math.max(0, this.line.halfWidthAt(p.s) - TUNING.edge);
       if (Math.abs(p.lateral) > lim2 + 0.5) continue;
       if (Math.abs(p.lateral - this.baseLatAt(p.s)) > 5.5) continue; // çizgiden çok uzak
+      // yüksek hızda yola göre sapma açısı sınırlı: yanal olarak erişilemeyecek pickup'a gitme (S virajda savrulma)
+      const maxSlope = clamp(TUNING.slopeK / Math.max(vF, 10), TUNING.slopeMin, TUNING.slopeMax);
+      if (Math.abs(p.lateral - lat) > maxSlope * Math.min(ds, 75)) continue;
       best = p;
       bestDs = ds;
     }
@@ -1181,23 +1206,94 @@ export class BotDriver {
 
   // ---------------------------------------------------------------------------------------------------
   // Rampalar: 'jump' rampalarından bazen, 'roll' rampalarına yalnızca yetenekli botlar bazen girer.
-  updateRamp(s, lim) {
-    const info = this.line.nextRamp(s, 160, this.rampInfo);
+  updateRamp(s, vF, lim) {
+    const L = this.line.trackLength;
+    const car = this.car;
+    const info = this.line.nextRamp(s, 140, this.rampInfo);
     const ramp = info.ramp;
-    if (!ramp) return NaN;
-    const lap = this.car.lap | 0;
+    if (!ramp) {
+      // rampadan sonra (havadayken ve inişten sonra bir süre) yola paralel sür
+      if (this.rampHold) {
+        if (car.airborne) return this.rampLat;
+        let d = this.rampHoldS - s;
+        d -= Math.round(d / L) * L;
+        if (d > 0 && d < 200) return this.rampLat;
+        this.rampHold = false;
+      }
+      return NaN;
+    }
+    const line = this.line;
+    const v = Math.max(vF, 20);
+    const kf = rampFlightK.get(ramp);
+    // tahmini uçuş mesafesi: öğrenilmediyse rampa geometrisinden (çıkış dikey hızı ≈ 2·h/l·v, uçuş süresi ≈ 2·vy/g)
+    const k0 = (4 * (ramp.height || 2)) / (Math.max(5, ramp.s1 - ramp.s0) * GRAVITY_GUESS);
+    const dist = (kf === undefined ? k0 : kf) * v * v;
+    // düz uçuşta yola göre yanal sapma: sağa dönen yolda (κ > 0) araba sola kayar
+    const drift = -line.curvatureAt(ramp.s1 + dist * 0.5) * dist * dist * 0.5;
+    const latMin = Number.isFinite(ramp.latMin) ? ramp.latMin : -lim;
+    const latMax = Number.isFinite(ramp.latMax) ? ramp.latMax : lim;
+    const landWant = clamp(this.baseLatAt(ramp.s1 + dist), -lim + 0.3, lim - 0.3);
+    const lo = latMin + 0.6;
+    const hi = latMax - 0.6;
+    const takeLat = lo <= hi ? clamp(landWant - drift, lo, hi) : (latMin + latMax) / 2;
+    const lap = car.lap | 0;
     if (this.rampKey !== ramp || this.rampLap !== lap) {
       this.rampKey = ramp;
       this.rampLap = lap;
+      const P = this.profile;
+      const k = this.k;
       const r = this.rng();
-      if (ramp.type === 'roll') this.rampTake = this.skill >= 0.7 && r < 0.2 + 0.6 * (this.skill - 0.7);
-      else this.rampTake = r < 0.3 + 0.35 * this.skill;
-      const latMin = Number.isFinite(ramp.latMin) ? ramp.latMin : -lim;
-      const latMax = Number.isFinite(ramp.latMax) ? ramp.latMax : lim;
-      this.rampLat = clamp((latMin + latMax) / 2, -lim, lim);
-      if (this.rampLat < latMin + 0.3 || this.rampLat > latMax - 0.3) this.rampTake = false; // erişilemez
+      let take;
+      if (ramp.type === 'roll') take = k >= 0.7 && r < (0.2 + 0.6 * (k - 0.7)) * P.rampMul;
+      else take = r < (0.3 + 0.35 * k) * P.rampMul;
+      // rampadan kaçınmak için serbest bölgeler (rampanın iki yanı)
+      const freeL = latMin - 1.8;
+      const freeR = latMax + 1.8;
+      const okL = freeL > -lim + 0.4;
+      const okR = freeR < lim - 0.4;
+      // inişte duvara ya da yol dışına düşecekse girme
+      const landing = takeLat + drift;
+      if (take && (lo > hi || Math.abs(landing) > lim + 0.2) && (okL || okR)) take = false;
+      if (!take && !okL && !okR) take = true; // kaçınacak yer yok
+      this.rampTake = take;
+      if (!take) {
+        const base = this.baseLatAt(ramp.s0);
+        const cL = okL ? Math.min(base, freeL) : NaN;
+        const cR = okR ? Math.max(base, freeR) : NaN;
+        if (okL && okR) this.avoidRampLat = Math.abs(cL - base) <= Math.abs(cR - base) ? cL : cR;
+        else this.avoidRampLat = okL ? cL : cR;
+      }
     }
-    return this.rampTake ? this.rampLat : NaN;
+    this.rampLat = this.rampTake ? takeLat : this.avoidRampLat;
+    this.rampHold = true;
+    this.rampHoldS = ramp.s1 + 40;
+    return this.rampLat;
+  }
+
+  /** Uçuş mesafesini öğren (rampa başına, tüm botlar paylaşır): mesafe ≈ k·v². */
+  trackFlight(s, vF) {
+    const car = this.car;
+    const air = car.airborne === true;
+    if (air && !this.wasAir) {
+      this.flightS0 = s;
+      this.flightV0 = vF;
+      this.flightRamp = this.rampHold ? this.rampKey : null;
+    } else if (!air && this.wasAir) {
+      const L = this.line.trackLength;
+      if (this.rampHold) this.rampHoldS = s + 25;
+      if (this.flightRamp && this.flightV0 > 20) {
+        let d = s - this.flightS0;
+        d -= Math.round(d / L) * L;
+        d += this.flightV0 * 0.1; // 'havada' bayrağı ~0.1 s gecikmeli
+        if (d > 5 && d < 500) {
+          const k = d / (this.flightV0 * this.flightV0);
+          const old = rampFlightK.get(this.flightRamp);
+          rampFlightK.set(this.flightRamp, old === undefined ? k : old * 0.5 + k * 0.5);
+        }
+      }
+      this.flightRamp = null;
+    }
+    this.wasAir = air;
   }
 
   // ---------------------------------------------------------------------------------------------------

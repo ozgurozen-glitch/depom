@@ -34,6 +34,7 @@ export const PROFILES = {
     nitroChainAim: [0.55, 1.05], // basış zamanı aralığı (ilerleme)
     shock: 0,
     pickup: 0.15, // nitro pickup'ına yönelme olasılığı
+    rampMul: 0.3, // rampaya girme olasılığı çarpanı
     // lastik bant
     rubberBehind: [120, 150],
     rubberAhead: [180, 200],
@@ -68,6 +69,7 @@ export const PROFILES = {
     nitroChainAim: [0.77, 0.86],
     shock: 0,
     pickup: 0.6,
+    rampMul: 1,
     rubberBehind: [150, 150],
     rubberAhead: [250, 200],
     rubberBoostMul: 1.0,
@@ -100,6 +102,7 @@ export const PROFILES = {
     nitroChainAim: [0.775, 0.83],
     shock: 1,
     pickup: 1,
+    rampMul: 1.4,
     rubberBehind: [150, 150],
     rubberAhead: [380, 250],
     rubberBoostMul: 1.0,

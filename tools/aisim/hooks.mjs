@@ -20,7 +20,7 @@ export async function resolve(specifier, context, next) {
 }
 
 export async function load(url, context, next) {
-  const m = /\/src\/car\.js\?tune=(.*)$/.exec(url);
+  const m = /\/src\/car\.js\?(?:r=\d+&)?tune=(.*)$/.exec(url);
   if (!m) return next(url, context);
   const tune = decodeURIComponent(m[1]);
   let src = fs.readFileSync(fileURLToPath(url.split('?')[0]), 'utf8');

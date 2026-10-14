@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { BotDriver } from '../../src/ai.js';
 import { CollisionSystem } from '../../src/collisions.js';
 import { makeTrack } from './tracks.mjs';
+import { makeRealTrack } from './realtrack.mjs';
 import { getRacingLine } from '../../src/ai/racingLine.js';
 
 const DT = 1 / 60;
@@ -17,13 +18,17 @@ export const MODELS = {
 };
 
 const carClasses = new Map();
-async function carClass(model) {
-  let cls = carClasses.get(model);
+let coldCounter = 0;
+/** cold: her çağrıda yeni sınıf (→ yeni öğrenilmiş araç modeli): "soğuk başlangıç" ölçümleri için. */
+async function carClass(model, cold = false) {
+  const key = cold ? `${model}#${++coldCounter}` : model;
+  let cls = carClasses.get(key);
   if (!cls) {
     const tune = encodeURIComponent(JSON.stringify(MODELS[model] || {}));
-    const mod = await import(new URL(`../../src/car.js?tune=${tune}`, import.meta.url).href);
+    const q = cold ? `r=${coldCounter}&tune=${tune}` : `tune=${tune}`;
+    const mod = await import(new URL(`../../src/car.js?${q}`, import.meta.url).href);
     cls = mod.Car;
-    carClasses.set(model, cls);
+    carClasses.set(key, cls);
   }
   return cls;
 }
@@ -51,23 +56,29 @@ export async function runRace(opts) {
     models = ['vortex'], playerModel = 'vortex', player: playerMode = 'normal', solo = false,
     maxTime = 0, verbose = false,
   } = opts;
-  const track = makeTrack(trackId, trackOpts);
+  const track = trackId === 'riviera' ? await makeRealTrack() : makeTrack(trackId, trackOpts);
   const L = track.length;
   const scene = new THREE.Scene();
   const collisions = new CollisionSystem();
 
+  const raceClasses = new Map();
+  const raceClass = async (m) => {
+    if (!opts.cold) return carClass(m);
+    if (!raceClasses.has(m)) raceClasses.set(m, await carClass(m, true));
+    return raceClasses.get(m);
+  };
   const entries = []; // { car, driver, model, idx, m }
   const nBots = solo ? 1 : bots;
   for (let i = 0; i < nBots; i++) {
     const model = models[i % models.length];
-    const Car = await carClass(model);
+    const Car = await raceClass(model);
     const car = new Car({ scene, color: 0xff0000, name: `B${i}`, isPlayer: false });
     const driver = new BotDriver(car, track, botOptions(solo ? (opts.botIndex ?? 0) : i, solo ? 7 : bots, difficulty));
     entries.push({ car, driver, model, bot: true, name: `B${i}:${model}` });
   }
   let playerEntry = null;
   if (!solo && playerMode !== 'none') {
-    const Car = await carClass(playerModel);
+    const Car = await raceClass(playerModel);
     const car = new Car({ scene, color: 0x1677ff, name: 'SEN', isPlayer: true });
     const driver = new BotDriver(car, track, playerMode === 'same'
       ? { skill: 0.9, aggression: 0.5, preferredLane: 0, difficulty }
@@ -260,8 +271,8 @@ export async function runRace(opts) {
         }
         // ters yön
         if (!car.wrecked && !car.airborne && time > 4) {
-          const smp = track.planar(car.trackS, {});
-          const dot = Math.sin(car.yaw) * smp.tx + Math.cos(car.yaw) * smp.tz;
+          const smp = track.sample(car.trackS).tangent;
+          const dot = Math.sin(car.yaw) * smp.x + Math.cos(car.yaw) * smp.z;
           if (dot < -0.2) {
             m.revT += DT;
             if (m.revT > 1 && !m.revFlag) {
