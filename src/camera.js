@@ -19,12 +19,17 @@ const RACE = {
   nitroPull: 0.9, // nitroda araba kameradan "kaçar"
   height: 1.95,
   lookAhead: 3.2,
+  lookAheadSpeed: 1.6, // azami hızda ek ileri bakış (m)
   lookHeight: 0.95,
-  yawRate: 5.5,
-  yawRateDrift: 3.2,
-  yawRateAir: 2.4,
-  heightRate: 7,
-  heightRateAir: 3,
+  // Yay açısal frekansları (1/s). Eski üstel hızlarla yaklaşık aynı gecikme, daha az titreşim.
+  yawOmega: 10,
+  yawOmegaDrift: 6,
+  yawOmegaAir: 4.4,
+  heightOmega: 11,
+  heightOmegaAir: 3.6,
+  lookOmega: 9, // bakış noktası (ileri bakış) yumuşatma
+  distOmega: 3.4,
+  fovOmega: 3.2,
   maxAboveRoad: 2.9, // tünel tavanına girmemek için
   minAboveRoad: 0.75,
 };
@@ -48,7 +53,8 @@ const POV = {
 };
 const POV_NITRO_FOV = 6;
 const POV_LOOK_DIST = 30; // bakış hedefi: araç ileri yönünde (m)
-const POV_SMOOTH = 30; // konum/bakış yumuşatma oranı (1/s); yalnızca titreşimi keser
+const POV_SMOOTH = 26; // konum yumuşatma oranı (1/s); yalnızca titreşimi keser
+const POV_LOOK_SMOOTH = 15; // bakış yumuşatma oranı: gövde yalpasının dönüşe yansımasını azaltır
 const POV_SHAKE = 0.4; // iç görünümde sarsıntı çarpanı
 const POV_MIN_ABOVE_ROAD = 0.3; // bumper çapası origin'in ~0.55 m üstünde; 0.75'e zorlanmasın
 
@@ -71,6 +77,16 @@ const wrapAngle = (a) => {
   else if (a < -Math.PI) a += Math.PI * 2;
   return a;
 };
+// Kritik sönümlü yay (analitik, kararlı): x'i hedefe titreşimsiz yaklaştırır, hız sürekliliğini korur.
+// Üstel yaklaşımdan farkı: ikinci derece olduğu için yüksek frekanslı titreşimi daha çok keser ve
+// hedef aniden sıçradığında hızı da yumuşak başlatır. Döndürür: yeni konum; hız st.v'de tutulur.
+function spring(cur, target, st, omega, dt) {
+  const x = cur - target;
+  const e = Math.exp(-omega * dt);
+  const t = (st.v + omega * x) * dt;
+  st.v = (st.v - omega * t) * e;
+  return target + (x + t) * e;
+}
 const easeInOutCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - ((-2 * t + 2) ** 3) / 2);
 
 export class ChaseCamera {
@@ -99,6 +115,14 @@ export class ChaseCamera {
     this.roll = 0;
     this.fov = camera.fov;
     this.orbitStart = 0;
+    // Yay hızları ve yumuşatılmış girdiler
+    this.sv = { yaw: { v: 0 }, dist: { v: 0 }, camY: { v: 0 }, lookY: { v: 0 }, fov: { v: 0 }, lx: { v: 0 }, lz: { v: 0 } };
+    this.lookSm = new THREE.Vector3(); // yumuşatılmış bakış ofseti (x, z; y ayrı yaylanır)
+    this.lookValid = false;
+    this.sfSm = 0; // yumuşatılmış hız oranı
+    this.driftK = 0;
+    this.airK = 0;
+    this.buzzK = 0;
 
     // Wreck
     this.wreckActive = false;
@@ -214,10 +238,11 @@ export class ChaseCamera {
       this.blendFrom.copy(this.offset);
       this.blendLookFrom.copy(this.lookOffset);
       this.blendT = 0;
-      this.blendDur = 0.8;
+      this.blendDur = 1.0;
       this.camYaw = car.yaw;
       this.camY = _carPos.y + RACE.height;
       this.lookY = _carPos.y + RACE.lookHeight;
+      this.resetSprings();
     }
 
     let fovTarget;
@@ -250,10 +275,15 @@ export class ChaseCamera {
     this.constrainToTrack(pos, car, track, this.povActive(car) ? POV_MIN_ABOVE_ROAD : RACE.minAboveRoad);
     const look = _v2.copy(_carPos).add(this.lookOffset);
 
-    // FOV
-    this.fov += (fovTarget - this.fov) * damp(2.6, dt);
+    // FOV: kritik sönümlü yay (hedef sıçrasa da değişim hızı sürekli kalır)
+    this.fov = spring(this.fov, fovTarget, this.sv.fov, RACE.fovOmega, dt);
     this.applyPose(pos, look, dt, car);
     this.lastCarPos.copy(_carPos);
+  }
+
+  resetSprings() {
+    for (const k in this.sv) this.sv[k].v = 0;
+    this.lookValid = false;
   }
 
   // --- Modlar --------------------------------------------------------------------------------
@@ -262,33 +292,52 @@ export class ChaseCamera {
   computeRace(dt, car, track, cfg = this.view === 'far' ? FAR_CFG : CHASE_CFG) {
     const v = car.velocity;
     const hs = Math.hypot(v.x, v.z);
-    const sf = clamp(hs / REF_SPEED, 0, 1.4);
+    this.sfSm += (clamp(hs / REF_SPEED, 0, 1.4) - this.sfSm) * damp(4, dt);
+    const sf = this.sfSm;
+    // Drift / havada durumları ani değil yumuşak geçsin (yay frekansı ve bakış karışımı bunlara bağlı).
+    this.driftK += ((car.drifting ? 1 : 0) - this.driftK) * damp(5, dt);
+    this.airK += ((car.airborne ? 1 : 0) - this.airK) * damp(6, dt);
 
     // Kamera yönü: normalde gövdeyi, drift'te hız vektörünü izler (arabanın yan açısı görünsün).
     let heading = car.yaw;
     if (hs > 4 && car.speed > -1) {
       const velYaw = Math.atan2(v.x, v.z);
-      const w = car.drifting ? 0.62 : 0.25;
+      const w = 0.25 + (0.62 - 0.25) * this.driftK;
       heading = car.yaw + wrapAngle(velYaw - car.yaw) * w;
     }
-    const rate = car.airborne ? RACE.yawRateAir : car.drifting ? RACE.yawRateDrift : RACE.yawRate;
-    this.camYaw = wrapAngle(this.camYaw + wrapAngle(heading - this.camYaw) * damp(rate, dt));
+    let yawOmega = RACE.yawOmega + (RACE.yawOmegaDrift - RACE.yawOmega) * this.driftK;
+    yawOmega += (RACE.yawOmegaAir - yawOmega) * this.airK;
+    this.camYaw = heading + spring(wrapAngle(this.camYaw - heading), 0, this.sv.yaw, yawOmega, dt);
+    this.camYaw = wrapAngle(this.camYaw);
 
     const nitroPull = car.nitroActive ? RACE.nitroPull * cfg.dist * (car.nitroLevel === 'shockwave' ? 1.4 : 1) : 0;
     const distTarget = (RACE.distance + RACE.distanceSpeed * Math.min(sf, 1)) * cfg.dist + nitroPull;
-    this.dist += (distTarget - this.dist) * damp(car.nitroActive ? 2.2 : 3, dt);
+    this.dist = spring(this.dist, distTarget, this.sv.dist, car.nitroActive ? 2.6 : RACE.distOmega, dt);
 
-    // Yükseklik: havada yumuşak (süzülme hissi), yerde daha sıkı.
-    const hRate = car.airborne ? RACE.heightRateAir : RACE.heightRate;
-    this.camY += (_carPos.y + RACE.height * cfg.height - this.camY) * damp(hRate, dt);
-    this.lookY += (_carPos.y + RACE.lookHeight - this.lookY) * damp(car.airborne ? 6 : 12, dt);
+    // Yükseklik: havada yumuşak (süzülme hissi), yerde daha sıkı; iniş sarsıntısı yayla emilir.
+    const hOmega = RACE.heightOmega + (RACE.heightOmegaAir - RACE.heightOmega) * this.airK;
+    this.camY = spring(this.camY, _carPos.y + RACE.height * cfg.height, this.sv.camY, hOmega, dt);
+    this.lookY = spring(this.lookY, _carPos.y + RACE.lookHeight, this.sv.lookY, 14 + (6 - 14) * this.airK, dt);
     // Araba kameradan çok uzaklaşmasın (uzun düşüşler).
     this.camY = clamp(this.camY, _carPos.y + 0.6, _carPos.y + 5);
 
     const sy = Math.sin(this.camYaw);
     const cy = Math.cos(this.camYaw);
     _desiredOff.set(-sy * this.dist, this.camY - _carPos.y, -cy * this.dist);
-    _desiredLook.set(sy * RACE.lookAhead, this.lookY - _carPos.y, cy * RACE.lookAhead);
+    // İleri bakış noktası: hızla biraz uzar ve yay ile yumuşatılır (yaw/mesafe sıçramaları bakışa geçmesin).
+    const la = RACE.lookAhead + RACE.lookAheadSpeed * Math.min(sf, 1);
+    const lx = sy * la;
+    const lz = cy * la;
+    if (!this.lookValid) {
+      this.lookSm.set(lx, 0, lz);
+      this.sv.lx.v = 0;
+      this.sv.lz.v = 0;
+      this.lookValid = true;
+    } else {
+      this.lookSm.x = spring(this.lookSm.x, lx, this.sv.lx, RACE.lookOmega, dt);
+      this.lookSm.z = spring(this.lookSm.z, lz, this.sv.lz, RACE.lookOmega, dt);
+    }
+    _desiredLook.set(this.lookSm.x, this.lookY - _carPos.y, this.lookSm.z);
 
     // Virajda hafif yatış.
     const rollT = clamp(-(car.yawRate || 0) * (car.drifting ? 0.045 : 0.03), -0.06, 0.06);
@@ -321,9 +370,8 @@ export class ChaseCamera {
     _lookOff.copy(_lookW).sub(_carPos);
 
     if (this.povValid) {
-      const k = damp(POV_SMOOTH, dt);
-      this.povOff.lerp(_anchorOff, k);
-      this.povLookOff.lerp(_lookOff, k);
+      this.povOff.lerp(_anchorOff, damp(POV_SMOOTH, dt));
+      this.povLookOff.lerp(_lookOff, damp(POV_LOOK_SMOOTH, dt));
     } else {
       this.povOff.copy(_anchorOff);
       this.povLookOff.copy(_lookOff);
@@ -356,6 +404,7 @@ export class ChaseCamera {
     this.camY = _carPos.y + height;
     this.lookY = _carPos.y + _desiredLook.y;
     this.roll += (0 - this.roll) * damp(4, dt);
+    this.resetSprings();
     return 56 + (BASE_FOV - 56) * k;
   }
 
@@ -367,6 +416,7 @@ export class ChaseCamera {
     this.camY = _carPos.y + RACE.height;
     this.lookY = _carPos.y + RACE.lookHeight;
     this.roll += (0 - this.roll) * damp(3, dt);
+    this.resetSprings();
     return this.mode === 'menu' ? 50 : 56;
   }
 
@@ -385,8 +435,9 @@ export class ChaseCamera {
       // Kamera bir süre arabanın momentumuyla kayar, sonra durur.
       this.wreckVel.copy(car.velocity).multiplyScalar(0.55);
       this.wreckVel.y = 0;
-      this.wreckLook.copy(_carPos);
-      this.wreckLook.y += 0.6;
+      // Bakış, takip kamerasının son bakış noktasından başlar (ani bakış sıçraması olmasın).
+      this.wreckLook.copy(_carPos).add(this.lookOffset);
+      this.resetSprings();
     }
     this.wreckVel.multiplyScalar(Math.exp(-2.2 * dt));
     this.wreckPos.addScaledVector(this.wreckVel, dt);
@@ -402,13 +453,13 @@ export class ChaseCamera {
     const yT = _carPos.y + 2.6;
     this.wreckPos.y += (yT - this.wreckPos.y) * damp(1.5, dt);
     this.constrainToTrack(this.wreckPos, car, track);
-    this.wreckLook.x += (_carPos.x - this.wreckLook.x) * damp(9, dt);
-    this.wreckLook.y += (_carPos.y + 0.6 - this.wreckLook.y) * damp(9, dt);
-    this.wreckLook.z += (_carPos.z - this.wreckLook.z) * damp(9, dt);
+    this.wreckLook.x += (_carPos.x - this.wreckLook.x) * damp(6, dt);
+    this.wreckLook.y += (_carPos.y + 0.6 - this.wreckLook.y) * damp(6, dt);
+    this.wreckLook.z += (_carPos.z - this.wreckLook.z) * damp(6, dt);
     this.offset.copy(this.wreckPos).sub(_carPos);
     this.lookOffset.copy(this.wreckLook).sub(_carPos);
     this.roll += (0 - this.roll) * damp(3, dt);
-    this.fov += (BASE_FOV + 4 - this.fov) * damp(2, dt);
+    this.fov = spring(this.fov, BASE_FOV + 4, this.sv.fov, 2.2, dt);
     this.applyPose(_v1.copy(this.wreckPos), _v2.copy(this.wreckLook), dt, car);
   }
 
@@ -451,16 +502,25 @@ export class ChaseCamera {
     const t = this.time;
     const tr = this.trauma * this.trauma;
     const hs = Math.hypot(car.velocity.x, car.velocity.z);
-    let buzz = 0;
+    // Hız/nitro uğultusu: ani açılıp kapanmaz (yumuşatılmış genlik) ve düşük frekanslı, titreme değil
+    // hafif bir sarsıntı; sarsıntı (travma) ise eskisi gibi hızlı kalır.
+    let buzzT = 0;
     if (this.mode === 'race' && !car.wrecked) {
-      buzz = Math.max(0, (hs - 60) / 40) * 0.012 + (car.nitroActive ? 0.02 : 0);
+      buzzT = Math.min(1, Math.max(0, (hs - 60) / 40)) * 0.010 + (car.nitroActive ? 0.016 : 0);
     }
+    this.buzzK += (buzzT - this.buzzK) * damp(buzzT > this.buzzK ? 3 : 2, dt);
     const shakeK = this.povActive(car) ? POV_SHAKE : 1;
-    const amp = (tr * 0.45 + buzz) * shakeK;
+    const amp = tr * 0.45 * shakeK;
+    const bz = this.buzzK * (this.povActive(car) ? 1.4 : 1); // iç görünümde gövde titreşimi hissedilir kalsın
     if (amp > 0) {
       pos.x += (Math.sin(t * 31.7) + Math.sin(t * 17.3 + 1.3) * 0.6) * amp * 0.6;
       pos.y += (Math.sin(t * 27.1 + 2.1) + Math.sin(t * 13.9) * 0.5) * amp * 0.5;
       pos.z += Math.sin(t * 23.3 + 0.7) * amp * 0.4;
+    }
+    if (bz > 0.0001) {
+      pos.x += (Math.sin(t * 11.3) + Math.sin(t * 6.7 + 1.3) * 0.6) * bz * 0.6;
+      pos.y += (Math.sin(t * 13.1 + 2.1) + Math.sin(t * 7.9) * 0.5) * bz * 0.5;
+      pos.z += Math.sin(t * 9.3 + 0.7) * bz * 0.3;
     }
     cam.position.copy(pos);
     this.posValid = true;
