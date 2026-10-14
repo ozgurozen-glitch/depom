@@ -16,6 +16,7 @@ const KEYS = {
   nitro: ['ArrowUp', 'KeyW', 'ShiftLeft', 'ShiftRight', 'KeyN'],
   pause: ['Escape', 'KeyP'],
   restart: ['KeyR'],
+  camera: ['KeyC'],
 };
 const GAME_KEYS = new Set([...KEYS.left, ...KEYS.right, ...KEYS.brake, ...KEYS.nitro]);
 
@@ -52,15 +53,20 @@ const STYLE = `
   background: rgba(12,16,26,0.38); border: 2px solid rgba(255,190,90,0.75); box-shadow: 0 4px 16px rgba(0,0,0,0.25); }
 .tc-drift small { font-size: 0.72em; opacity: 0.8; letter-spacing: 0.06em; }
 .tc-drift.tc-pressed { transform: scale(0.93); background: rgba(255,170,60,0.4); border-color: #ffd28a; }
-.tc-pause { top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right)); width: 48px; height: 48px;
+.tc-pause, .tc-camera { top: max(8px, env(safe-area-inset-top)); width: 48px; height: 48px;
   border-radius: 12px; background: rgba(12,16,26,0.45); border: 2px solid rgba(255,255,255,0.5); font-size: 18px; letter-spacing: 0; }
-.tc-pause.tc-pressed { background: rgba(255,255,255,0.35); }
+.tc-pause { right: max(8px, env(safe-area-inset-right)); }
+.tc-camera { right: calc(max(8px, env(safe-area-inset-right)) + 48px + 8px); }
+.tc-camera svg { width: 24px; height: 24px; fill: rgba(255,255,255,0.92); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
+.tc-pause.tc-pressed, .tc-camera.tc-pressed { background: rgba(255,255,255,0.35); }
 @media (max-height: 420px) { .tc-root { --tc-steer: 78px; --tc-nitro: 96px; --tc-drift: 74px; } }
 `;
 
 const ARROW_LEFT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.5 3.5 6 12l10.5 8.5z"/></svg>';
 const ARROW_RIGHT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 3.5 18 12 7.5 20.5z"/></svg>';
 const BOLT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 1 4 14h6.5L9 23l11-14h-7z"/></svg>';
+// Kamera gövdesi + mercek (evenodd ile delik): görünüm değiştirme düğmesi.
+const CAMERA_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M4 7h3.2l1.6-2.4h6.4L16.8 7H20a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 20 19H4a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 4 7zm8 2.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 1 0 0-6.8z"/></svg>';
 
 export class Controls {
   constructor(domElement) {
@@ -68,6 +74,7 @@ export class Controls {
     this.keys = new Set();
     this.pauseQueued = false;
     this.restartQueued = false;
+    this.cameraQueued = false;
     this.isTouch = typeof window !== 'undefined'
       && ('ontouchstart' in window || (navigator.maxTouchPoints || 0) > 0);
 
@@ -82,7 +89,7 @@ export class Controls {
 
     // Gamepad
     this.pad = { steer: 0, brake: false, nitro: false, active: false };
-    this.padPrev = { start: false, select: false };
+    this.padPrev = { start: false, select: false, camera: false };
     this.padPolledAt = -1;
 
     this.onKeyDown = this.onKeyDown.bind(this);
@@ -111,6 +118,7 @@ export class Controls {
     if (e.repeat) return;
     if (KEYS.pause.includes(e.code)) this.pauseQueued = true;
     if (KEYS.restart.includes(e.code)) this.restartQueued = true;
+    if (KEYS.camera.includes(e.code) && !(e.ctrlKey || e.metaKey || e.altKey)) this.cameraQueued = true;
   }
 
   onKeyUp(e) {
@@ -147,6 +155,7 @@ export class Controls {
     }
     let start = false;
     let select = false;
+    let camera = false;
     for (const gp of list || []) {
       if (!gp || !gp.connected) continue;
       const b = (i) => gp.buttons[i] && (gp.buttons[i].pressed || gp.buttons[i].value > TRIGGER_THRESHOLD);
@@ -161,12 +170,15 @@ export class Controls {
       if (b(0) || b(7)) pad.nitro = true; // A / RT
       if (b(9)) start = true;
       if (b(8)) select = true;
+      if (b(3)) camera = true; // Y / üçgen
       pad.active = true;
     }
     if (start && !this.padPrev.start) this.pauseQueued = true;
     if (select && !this.padPrev.select) this.restartQueued = true;
+    if (camera && !this.padPrev.camera) this.cameraQueued = true;
     this.padPrev.start = start;
     this.padPrev.select = select;
+    this.padPrev.camera = camera;
   }
 
   // --- Ana API -------------------------------------------------------------------------------
@@ -219,6 +231,14 @@ export class Controls {
     return v;
   }
 
+  // Kamera görünümü değiştirme isteği: C tuşu, gamepad Y, dokunmatik kamera düğmesi.
+  consumeCameraToggle() {
+    this.pollGamepad();
+    const v = this.cameraQueued;
+    this.cameraQueued = false;
+    return v;
+  }
+
   setTouchVisible(visible) {
     this.touchVisible = Boolean(visible) && this.isTouch;
     if (this.touchRoot) this.touchRoot.classList.toggle('tc-visible', this.touchVisible);
@@ -262,6 +282,7 @@ export class Controls {
     make('drift', 'tc-round tc-drift', '<span>DRIFT</span><small>FREN</small>', 'Drift / fren');
     make('nitro', 'tc-round tc-nitro', `${BOLT}<span>NITRO</span>`, 'Nitro');
     make('pause', 'tc-pause', 'II', 'Duraklat');
+    make('camera', 'tc-camera', CAMERA_ICON, 'Kamera görünümü');
 
     root.addEventListener('pointerdown', (e) => this.onPointerDown(e));
     root.addEventListener('pointermove', (e) => this.onPointerMove(e));
@@ -282,8 +303,9 @@ export class Controls {
     if (!btn) return;
     if (e.cancelable) e.preventDefault();
     const name = btn.dataset.btn;
-    if (name === 'pause') {
-      this.pauseQueued = true;
+    if (name === 'pause' || name === 'camera') {
+      if (name === 'pause') this.pauseQueued = true;
+      else this.cameraQueued = true;
       btn.classList.add('tc-pressed');
       setTimeout(() => btn.classList.remove('tc-pressed'), 120);
       return;
@@ -324,7 +346,7 @@ export class Controls {
 
   refreshPressed() {
     for (const [name, el] of Object.entries(this.buttons)) {
-      if (name === 'pause') continue;
+      if (name === 'pause' || name === 'camera') continue;
       let on = false;
       for (const v of this.pointers.values()) if (v === name) on = true;
       el.classList.toggle('tc-pressed', on);

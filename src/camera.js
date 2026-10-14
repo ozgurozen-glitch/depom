@@ -1,8 +1,11 @@
-// ChaseCamera: Asphalt tarzı takip kamerası.
+// ChaseCamera: Asphalt tarzı takip kamerası ve görünümler.
 //
-// Kamera konumu arabaya göre bir ofset olarak hesaplanır (arabanın hızı ne olursa olsun kadrajda
-// kalır); ofsetin yönü, mesafesi ve yüksekliği yaylı/sönümlü olarak izlenir. Mod geçişleri ofsetler
-// arasında yumuşak karışımla yapılır. Wreck'te kamera takibi bırakır, takla atan arabaya bakar.
+// Dış görünümler (chase, far) kamerayı arabaya göre bir ofset olarak hesaplar; ofsetin yönü, mesafesi
+// ve yüksekliği yaylı/sönümlü izlenir. İç görünümler (hood, bumper) kamerayı aracın yerel çapasına
+// bağlar (gövdenin konumu, yaw'ı ve eğimi dahil). Görünüm değişimleri ofsetler arasında yumuşak
+// karışımla yapılır. Menu, countdown, finish modlarında ve wreck sırasında her zaman dış kamera
+// davranışı kullanılır; seçilen görünüm korunur ve yarışa dönünce geri gelir.
+// Kamera hiçbir zaman yol yüzeyinin altına inmez (constrainToTrack).
 import * as THREE from 'three';
 
 const BASE_FOV = 62;
@@ -26,11 +29,39 @@ const RACE = {
   minAboveRoad: 0.75,
 };
 
+// Görünüm sırası (cycleView bu sırayla döner).
+const VIEWS = ['chase', 'far', 'hood', 'bumper'];
+const VIEW_BLEND = 0.45; // görünüm değişiminde yumuşak geçiş süresi (s)
+
+// Dış görünüm çarpanları: far, chase'den ~1.5 kat uzak ve ~1.4 kat yüksek.
+const CHASE_CFG = { dist: 1, height: 1 };
+const FAR_CFG = { dist: 1.5, height: 1.4 };
+
+// İç görünüm çapaları araç yerel koordinatındadır (+Z ileri, Y yukarı); Car.viewAnchors varsa onlar kullanılır.
+const DEFAULT_ANCHORS = {
+  hood: new THREE.Vector3(0, 1.12, 0.35),
+  bumper: new THREE.Vector3(0, 0.55, 2.35),
+};
+const POV = {
+  hood: { fov: 75, fovSpeed: 20 }, // hızla ~95
+  bumper: { fov: 80, fovSpeed: 20 }, // hızla ~100
+};
+const POV_NITRO_FOV = 6;
+const POV_LOOK_DIST = 30; // bakış hedefi: araç ileri yönünde (m)
+const POV_SMOOTH = 30; // konum/bakış yumuşatma oranı (1/s); yalnızca titreşimi keser
+const POV_SHAKE = 0.4; // iç görünümde sarsıntı çarpanı
+const POV_MIN_ABOVE_ROAD = 0.3; // bumper çapası origin'in ~0.55 m üstünde; 0.75'e zorlanmasın
+
 const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _desiredOff = new THREE.Vector3();
 const _desiredLook = new THREE.Vector3();
 const _carPos = new THREE.Vector3();
+const _anchorW = new THREE.Vector3();
+const _lookW = new THREE.Vector3();
+const _fwdW = new THREE.Vector3();
+const _anchorOff = new THREE.Vector3();
+const _lookOff = new THREE.Vector3();
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const damp = (rate, dt) => 1 - Math.exp(-rate * dt);
@@ -77,6 +108,17 @@ export class ChaseCamera {
 
     this.posValid = false;
 
+    // Görünüm (chase | far | hood | bumper)
+    this.view = 'chase';
+    this.lastCar = null;
+    this.carViewCar = null; // Car.setViewMode'a en son hangi araç/görünüm için bildirildi
+    this.carViewApplied = null;
+    this.povOff = new THREE.Vector3(); // iç görünüm: yumuşatılmış ofset (arabaya göre konum)
+    this.povLookOff = new THREE.Vector3();
+    this.povValid = false;
+    this.extOffset = new THREE.Vector3(); // iç görünümdeyken dış (chase) kameranın son ofseti
+    this.extValid = false;
+
     // Sarsıntı
     this.trauma = 0;
     this.time = 0;
@@ -95,6 +137,47 @@ export class ChaseCamera {
     this.modeTime = 0;
   }
 
+  // --- Görünüm ---------------------------------------------------------------------------------
+
+  setView(view) {
+    if (!VIEWS.includes(view) || view === this.view) return;
+    this.view = view;
+    this.povValid = false;
+    if (this.initialized && this.mode === 'race') {
+      this.blendFrom.copy(this.offset);
+      this.blendLookFrom.copy(this.lookOffset);
+      this.blendT = 0;
+      this.blendDur = VIEW_BLEND;
+    }
+    this.syncCarView(this.lastCar);
+  }
+
+  // Sıra: chase → far → hood → bumper → chase. Yeni görünümü döndürür.
+  cycleView() {
+    const i = VIEWS.indexOf(this.view);
+    this.setView(VIEWS[(i + 1) % VIEWS.length]);
+    return this.view;
+  }
+
+  isPovView() {
+    return this.view === 'hood' || this.view === 'bumper';
+  }
+
+  // İç görünüm yalnızca yarışta ve araba sağlamken etkindir; diğer durumlarda dış kamera kullanılır.
+  povActive(car) {
+    return this.isPovView() && this.mode === 'race' && !!car && !car.wrecked;
+  }
+
+  // Gövdenin kameraya giren parçalarını yalnızca iç görünüm gerçekten etkinken gizletir.
+  syncCarView(car) {
+    if (!car) return;
+    const eff = this.povActive(car) ? this.view : 'chase';
+    if (car === this.carViewCar && eff === this.carViewApplied) return;
+    this.carViewCar = car;
+    this.carViewApplied = eff;
+    if (typeof car.setViewMode === 'function') car.setViewMode(eff);
+  }
+
   shake(intensity) {
     this.trauma = clamp(Math.max(this.trauma, intensity || 0), 0, 1);
   }
@@ -105,6 +188,9 @@ export class ChaseCamera {
     this.time += dt;
     this.modeTime += dt;
     _carPos.copy(car.position);
+    this.lastCar = car;
+    this.syncCarView(car);
+    if (!this.povActive(car)) this.povValid = false;
 
     if (!this.initialized) {
       this.camYaw = car.yaw;
@@ -146,7 +232,7 @@ export class ChaseCamera {
         fovTarget = this.computeOrbit(dt, car, { radius: 7.2, height: 1.5, look: 0.6, speed: 0.22, start: this.orbitStart });
         break;
       default:
-        fovTarget = this.computeRace(dt, car, track);
+        fovTarget = this.isPovView() ? this.computePov(dt, car) : this.computeRace(dt, car, track);
         break;
     }
 
@@ -161,7 +247,7 @@ export class ChaseCamera {
     this.lookOffset.copy(_desiredLook);
 
     const pos = _v1.copy(_carPos).add(this.offset);
-    this.constrainToTrack(pos, car, track);
+    this.constrainToTrack(pos, car, track, this.povActive(car) ? POV_MIN_ABOVE_ROAD : RACE.minAboveRoad);
     const look = _v2.copy(_carPos).add(this.lookOffset);
 
     // FOV
@@ -172,7 +258,8 @@ export class ChaseCamera {
 
   // --- Modlar --------------------------------------------------------------------------------
 
-  computeRace(dt, car, track) {
+  // Dış yarış kamerası (chase veya far). cfg: mesafe ve yükseklik çarpanları.
+  computeRace(dt, car, track, cfg = this.view === 'far' ? FAR_CFG : CHASE_CFG) {
     const v = car.velocity;
     const hs = Math.hypot(v.x, v.z);
     const sf = clamp(hs / REF_SPEED, 0, 1.4);
@@ -187,13 +274,13 @@ export class ChaseCamera {
     const rate = car.airborne ? RACE.yawRateAir : car.drifting ? RACE.yawRateDrift : RACE.yawRate;
     this.camYaw = wrapAngle(this.camYaw + wrapAngle(heading - this.camYaw) * damp(rate, dt));
 
-    const nitroPull = car.nitroActive ? RACE.nitroPull * (car.nitroLevel === 'shockwave' ? 1.4 : 1) : 0;
-    const distTarget = RACE.distance + RACE.distanceSpeed * Math.min(sf, 1) + nitroPull;
+    const nitroPull = car.nitroActive ? RACE.nitroPull * cfg.dist * (car.nitroLevel === 'shockwave' ? 1.4 : 1) : 0;
+    const distTarget = (RACE.distance + RACE.distanceSpeed * Math.min(sf, 1)) * cfg.dist + nitroPull;
     this.dist += (distTarget - this.dist) * damp(car.nitroActive ? 2.2 : 3, dt);
 
     // Yükseklik: havada yumuşak (süzülme hissi), yerde daha sıkı.
     const hRate = car.airborne ? RACE.heightRateAir : RACE.heightRate;
-    this.camY += (_carPos.y + RACE.height - this.camY) * damp(hRate, dt);
+    this.camY += (_carPos.y + RACE.height * cfg.height - this.camY) * damp(hRate, dt);
     this.lookY += (_carPos.y + RACE.lookHeight - this.lookY) * damp(car.airborne ? 6 : 12, dt);
     // Araba kameradan çok uzaklaşmasın (uzun düşüşler).
     this.camY = clamp(this.camY, _carPos.y + 0.6, _carPos.y + 5);
@@ -209,6 +296,46 @@ export class ChaseCamera {
 
     let fov = BASE_FOV + SPEED_FOV * Math.min(1.25, sf) ** 1.3;
     if (car.nitroActive) fov += NITRO_FOV[car.nitroLevel] || 8;
+    return fov;
+  }
+
+  // İç görünüm (hood, bumper): kamera araç çapasına bağlıdır, bakış hedefi araç ileri yönündedir.
+  computePov(dt, car) {
+    const view = this.view;
+    const spec = POV[view];
+
+    // Dış (chase) kameranın iç durumu (yön, mesafe, yükseklik) güncel kalsın; dışa dönünce sıçrama olmasın.
+    this.computeRace(dt, car, null, CHASE_CFG);
+    this.extOffset.copy(_desiredOff);
+    this.extValid = true;
+
+    // Çapa → dünya: gövdenin konumu, yaw'ı ve eğimi dahil. Ofsetler arabaya göre tutulur; böylece
+    // öteleme gecikmesiz izlenir (dünya konumunu yumuşatmak yüksek hızda kamerayı arkaya bırakırdı),
+    // yumuşatma yalnızca dönüş/eğim titreşimini keser.
+    const mw = car.mesh.matrixWorld;
+    const anchor = (car.viewAnchors && car.viewAnchors[view]) || DEFAULT_ANCHORS[view];
+    _anchorW.copy(anchor).applyMatrix4(mw);
+    _fwdW.set(0, 0, 1).transformDirection(mw);
+    _lookW.copy(_fwdW).multiplyScalar(POV_LOOK_DIST).add(_anchorW);
+    _anchorOff.copy(_anchorW).sub(_carPos);
+    _lookOff.copy(_lookW).sub(_carPos);
+
+    if (this.povValid) {
+      const k = damp(POV_SMOOTH, dt);
+      this.povOff.lerp(_anchorOff, k);
+      this.povLookOff.lerp(_lookOff, k);
+    } else {
+      this.povOff.copy(_anchorOff);
+      this.povLookOff.copy(_lookOff);
+      this.povValid = true;
+    }
+    _desiredOff.copy(this.povOff);
+    _desiredLook.copy(this.povLookOff);
+
+    const hs = Math.hypot(car.velocity.x, car.velocity.z);
+    const sf = Math.min(1, hs / REF_SPEED);
+    let fov = spec.fov + spec.fovSpeed * sf ** 0.7;
+    if (car.nitroActive) fov += POV_NITRO_FOV;
     return fov;
   }
 
@@ -246,7 +373,10 @@ export class ChaseCamera {
   updateWreck(dt, car, track) {
     if (!this.wreckActive) {
       this.wreckActive = true;
-      if (this.posValid) {
+      if (this.isPovView() && this.extValid) {
+        // İç görünümden wreck: dış kamera konumundan başla (iç kamera araba içinde kalır).
+        this.wreckPos.copy(_carPos).add(this.extOffset);
+      } else if (!this.isPovView() && this.posValid) {
         this.wreckPos.copy(this.camera.position);
       } else {
         // Kamera henüz yerleşmemişse arabanın arkasından başla.
@@ -285,7 +415,7 @@ export class ChaseCamera {
   // --- Yardımcılar ---------------------------------------------------------------------------
 
   // Kamerayı yolun üstünde, bariyerlerin içinde ve tünel tavanının altında tutar.
-  constrainToTrack(pos, car, track) {
+  constrainToTrack(pos, car, track, minAbove = RACE.minAboveRoad) {
     if (!track || typeof track.project !== 'function') return;
     let pr;
     try {
@@ -298,7 +428,7 @@ export class ChaseCamera {
     const width = track.width || 20;
     const onTrackArea = Math.abs(pr.lateral) < width / 2 + 6;
     if (onTrackArea) {
-      if (pos.y < roadY + RACE.minAboveRoad) pos.y = roadY + RACE.minAboveRoad;
+      if (pos.y < roadY + minAbove) pos.y = roadY + minAbove;
       if (this.mode === 'race' && !car.wrecked && !car.airborne && pos.y > roadY + RACE.maxAboveRoad) {
         pos.y = roadY + RACE.maxAboveRoad;
       }
@@ -325,7 +455,8 @@ export class ChaseCamera {
     if (this.mode === 'race' && !car.wrecked) {
       buzz = Math.max(0, (hs - 60) / 40) * 0.012 + (car.nitroActive ? 0.02 : 0);
     }
-    const amp = tr * 0.45 + buzz;
+    const shakeK = this.povActive(car) ? POV_SHAKE : 1;
+    const amp = (tr * 0.45 + buzz) * shakeK;
     if (amp > 0) {
       pos.x += (Math.sin(t * 31.7) + Math.sin(t * 17.3 + 1.3) * 0.6) * amp * 0.6;
       pos.y += (Math.sin(t * 27.1 + 2.1) + Math.sin(t * 13.9) * 0.5) * amp * 0.5;
@@ -335,10 +466,10 @@ export class ChaseCamera {
     this.posValid = true;
     cam.up.set(0, 1, 0);
     cam.lookAt(look);
-    const shakeRoll = tr * Math.sin(t * 19.7 + 0.4) * 0.035;
+    const shakeRoll = tr * Math.sin(t * 19.7 + 0.4) * 0.035 * shakeK;
     cam.rotateZ(this.roll + shakeRoll);
 
-    const fov = clamp(this.fov, 35, 100);
+    const fov = clamp(this.fov, 35, 110);
     if (Math.abs(cam.fov - fov) > 0.01) {
       cam.fov = fov;
       cam.updateProjectionMatrix();
