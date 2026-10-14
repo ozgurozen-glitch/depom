@@ -3,6 +3,10 @@
 import * as THREE from 'three';
 import { Car, CAR_TUNING } from '../../src/car.js';
 import { TestTrack } from './test-track.js';
+import { FlatTrack } from './flat-track.js';
+import { CARS, getCarDef } from '../../src/cars.js';
+import { measureDrift, printDrift } from './drift.mjs';
+import { measureCar, deriveStats } from './stats.mjs';
 
 const DT = 1 / 60;
 const KMH = 3.6;
@@ -13,30 +17,13 @@ function check(name, ok, detail) {
   if (!ok) failures++;
 }
 
-// Sonsuz düz pist (ivme/direksiyon ölçümleri için).
-class FlatTrack {
-  constructor(width = 200) {
-    this.name = 'flat';
-    this.width = width;
-    this.length = 1e6;
-    this.ramps = [];
-    this.pickups = [];
-  }
-  sample(s) {
-    return { pos: new THREE.Vector3(0, 0, s), tangent: new THREE.Vector3(0, 0, 1), right: new THREE.Vector3(-1, 0, 0), up: new THREE.Vector3(0, 1, 0), width: this.width };
-  }
-  project(pos) {
-    return { s: pos.z, lateral: -pos.x, height: pos.y, onRoad: Math.abs(pos.x) < this.width / 2 };
-  }
-  heightAt() { return 0; }
-  update() {}
-}
-
 const scene = new THREE.Scene();
 const input = (o = {}) => ({ throttle: 1, brake: 0, steer: 0, nitro: false, drift: false, ...o });
 
+let SPEC = null; // null → varsayılan araç (Vortex GT)
+
 function makeCar(track, s, lat = 0, speedKmh = 0) {
-  const car = new Car({ scene, color: 0x1677ff, name: 'T', isPlayer: true });
+  const car = new Car({ scene, color: 0x1677ff, name: 'T', isPlayer: true, spec: SPEC });
   placeOn(car, track, s, lat, speedKmh);
   return car;
 }
@@ -186,8 +173,9 @@ console.log('\n# Direksiyon');
 }
 
 // ---------------------------------------------------------------------------------------------
-console.log('\n# Drift');
-{
+for (const def of CARS) {
+  SPEC = def;
+  console.log(`\n# Drift — ${def.name}`);
   const tr = new FlatTrack(5000);
   const car = makeCar(tr, 0, 0, 200);
   car.nitro = 0;
@@ -197,11 +185,12 @@ console.log('\n# Drift');
   const v0 = car.speedKmh;
   run(car, tr, 2, (t, c) => { maxAng = Math.max(maxAng, c.driftAngle); return input({ throttle: 0, brake: 1, drift: true, steer: 1 }); });
   const dAng = maxAng * 180 / Math.PI;
-  check('drift açısı 25-45°', dAng > 30 && dAng <= 46, `${dAng.toFixed(1)}°`);
+  check('drift açısı 30-46°', dAng > 30 && dAng <= 46, `${dAng.toFixed(1)}°`);
   check('drift hızı az düşürür', car.speedKmh > v0 - 35, `${v0.toFixed(0)}→${car.speedKmh.toFixed(0)} km/s`);
-  check('drift nitro doldurur (~0.12/s)', car.nitro > 0.2 && car.nitro < 0.28, `bar ${car.nitro.toFixed(3)}`);
+  const nRate = (def.tuning && def.tuning.driftNitroRate) || 0.12;
+  check(`drift nitro doldurur (~${nRate}/s)`, Math.abs(car.nitro - nRate * 2.1) < 0.04, `bar ${car.nitro.toFixed(3)}`);
   // karşı direksiyon açıyı küçültür
-  run(car, tr, 0.15, input({ throttle: 0, brake: 1, drift: true, steer: -0.4 }));
+  run(car, tr, 0.35, input({ throttle: 0, brake: 1, drift: true, steer: -0.4 }));
   const angCounter = car.driftAngle * 180 / Math.PI;
   check('karşı direksiyon açıyı küçültür', angCounter < dAng - 3, `${angCounter.toFixed(1)}°`);
   const ev3 = run(car, tr, 0.4, input({ throttle: 1, brake: 0, drift: false, steer: 0.6 }));
@@ -219,6 +208,7 @@ console.log('\n# Drift');
   const car3 = makeCar(tr, 0, 0, 60);
   const ev6 = run(car3, tr, 0.5, input({ throttle: 0, brake: 1, drift: true, steer: 1 }));
   check('düşük hızda drift yok (fren)', !types(ev6).includes('drift_start') && car3.speedKmh < 60);
+  SPEC = null;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -340,11 +330,165 @@ console.log('\n# Bariyer, wreck, respawn');
 }
 
 // ---------------------------------------------------------------------------------------------
+console.log('\n# Drift yumuşaklığı (gövde açısı: hız ω rad/s, ivme α rad/s²; slip β = gövde/hız açısı)');
+{
+  // Önceki (sert) modelin Vortex GT için aynı senaryodaki ölçümü (200 km/s, giriş → sol/sağ geçiş → çıkış).
+  const BEFORE = { entry: { w: 4.99, a: 299.5 }, flick: { w: 7.57, a: 461.6 }, exit: { w: 0.57, a: 74.0 }, all: { w: 7.57, a: 461.6, sr: 6.07, sa: 344.6 } };
+  const r = measureDrift(null);
+  printDrift('sonra', r);
+  console.log(`     önce  entry ω ${BEFORE.entry.w} / α ${BEFORE.entry.a} | flick ω ${BEFORE.flick.w} / α ${BEFORE.flick.a} | exit α ${BEFORE.exit.a} | tümü β̇ ${BEFORE.all.sr} / β̈ ${BEFORE.all.sa}`);
+  const pct = (a, b) => `${((1 - a / b) * 100).toFixed(0)}% düşüş`;
+  check('yaw ivmesi tepe ≥ %75 düştü', r.all.a < BEFORE.all.a * 0.25, `${BEFORE.all.a} → ${r.all.a.toFixed(1)} rad/s² (${pct(r.all.a, BEFORE.all.a)})`);
+  check('slip ivmesi tepe ≥ %75 düştü', r.all.sa < BEFORE.all.sa * 0.25, `${BEFORE.all.sa} → ${r.all.sa.toFixed(1)} rad/s² (${pct(r.all.sa, BEFORE.all.sa)})`);
+  check('yaw hızı tepe ≥ %35 düştü', r.all.w < BEFORE.all.w * 0.65, `${BEFORE.all.w} → ${r.all.w.toFixed(2)} rad/s (${pct(r.all.w, BEFORE.all.w)})`);
+  check('slip hızı tepe ≥ %40 düştü', r.all.sr < BEFORE.all.sr * 0.6, `${BEFORE.all.sr} → ${r.all.sr.toFixed(2)} rad/s (${pct(r.all.sr, BEFORE.all.sr)})`);
+  check('çıkışta yaw ivmesi ≥ %90 düştü (tutuş kademeli)', r.phases.exit.a < BEFORE.exit.a * 0.1, `${BEFORE.exit.a} → ${r.phases.exit.a.toFixed(1)} rad/s²`);
+  for (const def of CARS) {
+    const m = measureDrift(def);
+    check(`${def.name}: giriş açısı 0.25–0.40 s'de oturur, aşım yok`, m.entry.settle >= 0.25 && m.entry.settle <= 0.4 && m.entry.overshootDeg < 0.5,
+      `oturma ${m.entry.settle?.toFixed(2)} s, aşım ${m.entry.overshootDeg.toFixed(2)}°`);
+    check(`${def.name}: ivme sınırları (α < 80, β̈ < 70 rad/s²)`, m.all.a < 80 && m.all.sa < 70, `α ${m.all.a.toFixed(1)}, β̈ ${m.all.sa.toFixed(1)}`);
+    check(`${def.name}: flick akıcı (slip yeni yönde < 0.6 s, kararlı ≥ 22°)`, m.flick.flipTime !== null && m.flick.flipTime < 0.6 && m.flick.toDeg > 22,
+      `geçiş ${m.flick.flipTime?.toFixed(2)} s, ${m.flick.toDeg.toFixed(1)}°`);
+    check(`${def.name}: çıkışta slip kademeli söner (0.3–1.0 s)`, m.exit.clearTime > 0.3 && m.exit.clearTime < 1.0, `${m.exit.clearTime?.toFixed(2)} s`);
+    check(`${def.name}: drift hız kaybı makul (< 45 km/s / 3.3 s)`, m.speedLoss < 45, `${m.speedLoss.toFixed(0)} km/s`);
+  }
+  // Analog direksiyon: kararlı drift açısı direksiyonla doğrusal (karşı direksiyon -0.5'e kadar drift yönünü korur)
+  const tr = new FlatTrack(5000);
+  for (const def of CARS) {
+    SPEC = def;
+    const T = { ...CAR_TUNING, ...def.tuning };
+    const got = [];
+    const want = [];
+    for (const st of [-0.45, -0.2, 0.2, 0.6, 1]) {
+      const c = makeCar(tr, 0, 0, 200);
+      run(c, tr, 0.1, input({ throttle: 0, brake: 1, drift: true, steer: 1 }));
+      run(c, tr, 1.8, input({ throttle: 0, brake: 1, drift: true, steer: st }));
+      got.push(c.driftAngle * 180 / Math.PI);
+      want.push((T.driftAngleMin + (T.driftAngleMax - T.driftAngleMin) * (st + 1) / 2) * 180 / Math.PI);
+    }
+    check(`${def.name}: drift açısı direksiyonla doğrusal (±1°)`, got.every((g, i) => Math.abs(g - want[i]) < 1),
+      `${got.map((g) => g.toFixed(1)).join(' / ')}° (beklenen ${want.map((g) => g.toFixed(1)).join(' / ')})`);
+  }
+  SPEC = null;
+}
+
+// ---------------------------------------------------------------------------------------------
+console.log('\n# Araç kataloğu: ayarlar, ölçülen performans, stats');
+{
+  const res = {};
+  for (const def of CARS) {
+    const m = measureCar(def);
+    res[def.id] = m;
+    const declared = ((def.tuning && def.tuning.maxSpeed) || CAR_TUNING.maxSpeed) * KMH;
+    console.log(`     ${def.name.padEnd(10)} azami ${m.topKmh.toFixed(1)} km/s | 0-100 ${m.t100.toFixed(2)} s | 0-200 ${m.t200.toFixed(2)} s | R@150 ${m.r150.toFixed(1)} m | R@250 ${m.r250.toFixed(1)} m | nitro +${m.nitroGain.toFixed(0)} km/s`);
+    check(`${def.name}: azami hız = tuning.maxSpeed`, Math.abs(m.topKmh - declared) < 1.5, `${m.topKmh.toFixed(1)} / ${declared.toFixed(0)} km/s`);
+    const car = new Car({ scene, color: def.color, name: 'C', isPlayer: false, spec: def });
+    check(`${def.name}: car.maxSpeed = ayarlı azami hız`, Math.abs(car.maxSpeed * KMH - declared) < 0.01, `${(car.maxSpeed * KMH).toFixed(1)}`);
+    check(`${def.name}: halfLength/halfWidth model boyutlarından`, car.halfLength > 2 && car.halfWidth > 0.9 && car.halfLength === car.dims.length / 2);
+    const st = deriveStats(m);
+    for (const k of ['speed', 'accel', 'handling', 'nitro']) {
+      check(`${def.name}: stats.${k} ayarla uyumlu`, Math.abs(st[k] - def.stats[k]) <= 0.04, `katalog ${def.stats[k]} / ölçülen ${st[k].toFixed(2)}`);
+    }
+    car.dispose();
+  }
+  const [V, R, T] = ['vortex', 'raijin', 'titan'].map((id) => res[id]);
+  check('azami hızlar ≈ 270 / 290 / 305 (Raijin / Vortex / Titan)', Math.abs(R.topKmh - 270) < 2 && Math.abs(V.topKmh - 290) < 2 && Math.abs(T.topKmh - 305) < 2);
+  check('Raijin: en iyi ivme ve en iyi viraj tutuşu', R.t200 < V.t200 && R.t200 < T.t200 && R.r150 < V.r150 && R.r150 < T.r150);
+  check('Titan: en yüksek azami hız, en yavaş ivme, en geniş viraj, en güçlü nitro',
+    T.topKmh > V.topKmh && T.topKmh > R.topKmh && T.t200 > V.t200 && T.t200 > R.t200 && T.r150 > V.r150 && T.nitroGain > V.nitroGain && T.nitroGain > R.nitroGain);
+  check('CAR_TUNING değişmedi (örnek başına birleşim)', CAR_TUNING.maxSpeed * KMH > 289.9 && CAR_TUNING.maxSpeed * KMH < 290.1 && Object.isFrozen(CAR_TUNING));
+
+  // Model paylaşımı: geometri paylaşılır, boya araba başına
+  const a = new Car({ scene, color: 0xff0000, name: 'A', spec: getCarDef('raijin') });
+  const b = new Car({ scene, color: 0x00ff00, name: 'B', spec: getCarDef('raijin') });
+  const c = new Car({ scene, color: 0x0000ff, name: 'C', spec: getCarDef('titan') });
+  check('aynı model: geometri paylaşılır, boya materyali ayrı', a.parts.body.geometry === b.parts.body.geometry && a.parts.paint !== b.parts.paint
+    && a.parts.paint.color.getHex() === 0xff0000 && b.parts.paint.color.getHex() === 0x00ff00);
+  check('farklı modeller farklı geometri ve boyut', a.parts.body.geometry !== c.parts.body.geometry && a.dims.length !== c.dims.length);
+
+  // POV görünümleri
+  const v = new Car({ scene, color: 0xffffff, name: 'V', spec: getCarDef('vortex') });
+  for (const car of [a, c, v]) {
+    const kids = car.parts.chassis.children;
+    const hidden = () => kids.filter((m) => !m.visible).length;
+    car.setViewMode('chase');
+    const h0 = hidden();
+    car.setViewMode('hood');
+    const hHood = hidden();
+    car.setViewMode('bumper');
+    const hBump = hidden();
+    const wheelsVisible = [...car.parts.frontWheels, car.parts.rearAxle].every((m) => m.visible);
+    car.setViewMode('far');
+    const hFar = hidden();
+    const an = car.viewAnchors;
+    check(`${car.spec.name}: POV — chase/far hepsi görünür, hood 3, bumper 6 parça gizli, tekerlekler görünür`,
+      h0 === 0 && hFar === 0 && hHood === 3 && hBump === 6 && wheelsVisible, `gizli: ${h0}/${hHood}/${hBump}/${hFar}`);
+    check(`${car.spec.name}: viewAnchors (hood, bumper) sonlu ve doğru yerde`, an.hood instanceof THREE.Vector3 && an.bumper instanceof THREE.Vector3
+      && [an.hood, an.bumper].every((p) => Number.isFinite(p.x + p.y + p.z)) && an.hood.y > 0.8 && an.hood.z > 0 && an.bumper.z > car.dims.length / 2 - 0.3 && an.bumper.y < an.hood.y,
+      `hood (${an.hood.toArray().join(', ')}) bumper (${an.bumper.toArray().join(', ')})`);
+  }
+  v.dispose();
+
+  // dispose: mesh + ayrı gölge düzlemi sahneden kalkar; paylaşılan geometri bırakılmaz, boya materyali bırakılır
+  const d = new Car({ scene, color: 0xff00ff, name: 'D', spec: getCarDef('titan') });
+  d.parts.shadow = d.parts.shadow || new THREE.Mesh(new THREE.PlaneGeometry(1, 1)); // Node'da canvas yok → sahte gölge
+  scene.add(d.parts.shadow);
+  check('dispose öncesi mesh + gölge sahnede', scene.children.includes(d.mesh) && scene.children.includes(d.parts.shadow));
+  let geoDisposed = 0;
+  d.parts.body.geometry.addEventListener('dispose', () => geoDisposed++);
+  let paintDisposed = 0;
+  d.parts.paint.addEventListener('dispose', () => paintDisposed++);
+  const shadow = d.parts.shadow;
+  d.dispose();
+  d.dispose(); // ikinci çağrı zararsız
+  check('dispose: mesh ve gölge sahneden kalktı', !scene.children.includes(d.mesh) && !scene.children.includes(shadow));
+  check('dispose: paylaşılan geometri bırakılmadı, araca özel boya materyali bırakıldı', geoDisposed === 0 && paintDisposed === 1, `geo ${geoDisposed}, boya ${paintDisposed}`);
+  a.dispose(); b.dispose(); c.dispose();
+}
+
+// ---------------------------------------------------------------------------------------------
+console.log('\n# Slipstream (draft)');
+{
+  const tr = new FlatTrack(5000);
+  for (const def of CARS) {
+    SPEC = def;
+    const vmax = ((def.tuning && def.tuning.maxSpeed) || CAR_TUNING.maxSpeed) * KMH;
+    const c0 = makeCar(tr, 0, 0, 100);
+    const c1 = makeCar(tr, 0, 0, 100);
+    check(`${def.name}: draft başlangıçta 0`, c0.draft === 0);
+    let maxStep = 0;
+    let prev = c1.speed;
+    for (let i = 0; i < 60 * 25; i++) {
+      c0.update(DT, input(), tr);
+      c1.draft = 1;
+      c1.update(DT, input(), tr);
+      maxStep = Math.max(maxStep, Math.abs(c1.speed - prev));
+      prev = c1.speed;
+    }
+    const gain = c1.speedKmh / c0.speedKmh;
+    check(`${def.name}: draft=1 azami hızı ~%8 artırır (yumuşak)`, gain > 1.06 && gain < 1.095, `${c0.speedKmh.toFixed(0)} → ${c1.speedKmh.toFixed(0)} km/s (+${((gain - 1) * 100).toFixed(1)}%)`);
+    check(`${def.name}: draft hız basamağı üretmez`, maxStep < 0.4, `maks Δv/adım ${maxStep.toFixed(3)} m/s`);
+    const a0 = makeCar(tr, 0, 0, 100);
+    const a1 = makeCar(tr, 0, 0, 100);
+    a1.draft = 1;
+    run(a0, tr, 3, input());
+    run(a1, tr, 3, input());
+    check(`${def.name}: draft ivmeyi artırır`, a1.speedKmh > a0.speedKmh + 1, `${a0.speedKmh.toFixed(1)} → ${a1.speedKmh.toFixed(1)} km/s`);
+    c1.draft = 0;
+    run(c1, tr, 10, input());
+    check(`${def.name}: draft kalkınca azami hıza geri döner`, Math.abs(c1.speedKmh - vmax) < 3, `${c1.speedKmh.toFixed(1)} km/s`);
+  }
+  SPEC = null;
+}
+
+// ---------------------------------------------------------------------------------------------
 console.log('\n# Performans');
 {
   const tr = new TestTrack(null);
   const cars = [];
-  for (let i = 0; i < 8; i++) cars.push(makeCar(tr, 10 + i * 12, (i % 3 - 1) * 5, 200));
+  for (let i = 0; i < 8; i++) { SPEC = CARS[i % CARS.length]; cars.push(makeCar(tr, 10 + i * 12, (i % 3 - 1) * 5, 200)); }
+SPEC = null;
   const t0 = performance.now();
   const N = 60 * 30;
   for (let k = 0; k < N; k++) {
@@ -354,7 +498,7 @@ console.log('\n# Performans');
     }
   }
   const ms = (performance.now() - t0) / N;
-  check('8 araba fizik adımı < 1 ms', ms < 1, `${ms.toFixed(3)} ms/adım`);
+  check('8 araba (karışık modeller) fizik adımı < 1 ms', ms < 1, `${ms.toFixed(3)} ms/adım`);
   const p = cars[0].getRearWheelPositions();
   const e = cars[0].getExhaustPositions();
   check('arka teker ve egzoz konumları sonlu', [...p, ...e].every((v) => Number.isFinite(v.x + v.y + v.z)));

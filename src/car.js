@@ -1,4 +1,5 @@
-// Car: arcade araba fiziği (Asphalt hissi) + prosedürel "Vortex GT" modeli.
+// Car: arcade araba fiziği (Asphalt hissi). Görünüm src/car/ altındaki prosedürel modellerden gelir
+// (Vortex GT, Raijin RS, Titan V8); her araç örneği CAR_TUNING + spec.tuning ile kendi ayarını kullanır.
 //
 // Durum: dünya koordinatında hız vektörü (velocity) + gövde yönü (yaw). Yerdeyken hız her adımda
 // gövde çerçevesine (ileri F / yanal L) ayrıştırılır; yanal kayma tutuşla söner, kaybolan yanal hızın
@@ -9,6 +10,8 @@
 // steer > 0 sağa (yaw azalır), lateral > 0 merkez çizgisinin sağı.
 import * as THREE from 'three';
 import { createCarModel, CAR_DIMENSIONS } from './car/model.js';
+
+export { CAR_DIMENSIONS };
 
 const KMH = 1 / 3.6;
 const DEG = Math.PI / 180;
@@ -53,18 +56,29 @@ export const CAR_TUNING = Object.freeze({
   driftMinSpeed: 80 * KMH,
   driftExitSpeed: 50 * KMH,
   driftSteerThreshold: 0.25,
-  driftAngleMin: 25 * DEG, // karşı direksiyon
-  driftAngleMid: 34 * DEG,
-  driftAngleMax: 45 * DEG, // direksiyon drift yönüne tam
-  driftPathRate: [0.45, 1.0, 1.5], // hız vektörünün dönüş oranı (karşı / nötr / tam), rad/s
+  driftAngleMin: 24 * DEG, // karşı direksiyon (k = -1) → doğrusal → direksiyon drift yönüne tam (k = +1)
+  driftAngleMax: 40 * DEG,
+  driftPathRate: [0.45, 1.5], // hız vektörünün dönüş oranı (karşı / tam direksiyon), rad/s; arası doğrusal
   driftMinRadius: 13,
-  driftSwing: 6.5, // gövdenin hedef açıya yaylanma oranı
+  driftSteerRate: 9, // drift içinde direksiyon girdisinin süzülme oranı (1/s): analog his
+  driftSlipOmega: 13.5, // gövde/hız açısının (slip) kritik sönümlü yay doğal frekansı (1/s) → ~0.3 s oturma
+  driftSlipOmegaFlip: 6.5, // sol↔sağ geçişte (slip sıfırdan geçerken) daha yumuşak
+  driftSlipTargetRate: 20, // hedef açının süzülme oranı (ivmenin basamaksız başlaması için)
+  driftPathResponse: 7, // hız vektörü dönüş oranının hedefe yaklaşma hızı (1/s)
   driftDecelBase: 1.0,
   driftDecelAngle: 2.0,
+  driftDecelResponse: 6,
   driftNitroRate: 0.12,
   driftReleaseGrace: 0.1,
-  driftFlipTime: 0.22,
-  gripRecoverTime: 0.45,
+  driftFlipTime: 0.14,
+  gripRecoverTime: 0.6, // drift çıkışında tutuşun kademeli geri gelme süresi
+  gripRecoverStart: 0.12, // çıkış anındaki tutuş çarpanı (smoothstep ile 1'e)
+  yawResponseRecover: 5, // çıkışta yaw oranının hedefe yaklaşması (yawResponse'a kademeli geçer)
+
+  // Slipstream (draft 0..1): azami hız ve ivmeye eklenen azami oran
+  draftSpeedBonus: 0.08,
+  draftAccelBonus: 0.08,
+  draftResponse: 4,
 
   // Hava
   gravity: 17,
@@ -88,9 +102,16 @@ export const CAR_TUNING = Object.freeze({
   ghostDuration: 1.5,
 });
 
-const T = CAR_TUNING;
-const D = CAR_DIMENSIONS;
-const NITRO_LEVELS = T.nitro;
+// Araç ayarı: CAR_TUNING üzerine spec.tuning birleştirilir (nitro seviyeleri tek tek birleşir).
+export function mergeTuning(over) {
+  if (!over) return CAR_TUNING;
+  const out = { ...CAR_TUNING, ...over };
+  if (over.nitro) {
+    out.nitro = {};
+    for (const k of Object.keys(CAR_TUNING.nitro)) out.nitro[k] = { ...CAR_TUNING.nitro[k], ...over.nitro[k] };
+  }
+  return Object.freeze(out);
+}
 
 // Sıcak yol için modül düzeyinde geçici nesneler.
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -114,17 +135,22 @@ const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2);
 
 export class Car {
   constructor({ scene, color, name, isPlayer, spec = null }) {
+    this.scene = scene;
     this.spec = spec;
     this.name = name;
     this.color = color;
     this.isPlayer = Boolean(isPlayer);
+    this.T = mergeTuning(spec && spec.tuning);
 
+    this.parts = createCarModel(spec ? spec.model : 'vortex', color);
+    this.dims = this.parts.dims;
+    this.viewAnchors = this.parts.viewAnchors;
+    this.viewMode = 'chase';
     this.radius = 2.2;
-    this.halfLength = D.length / 2;
-    this.halfWidth = D.width / 2;
-    this.maxSpeed = T.maxSpeed; // taban azami hız (m/s) — AI için bilgi
+    this.halfLength = this.dims.length / 2;
+    this.halfWidth = this.dims.width / 2;
+    this.maxSpeed = this.T.maxSpeed; // taban azami hız (m/s) — AI için bilgi
 
-    this.parts = createCarModel(color);
     this.mesh = this.parts.root;
     this.mesh.name = `car:${name}`;
     scene.add(this.mesh);
@@ -148,6 +174,8 @@ export class Car {
     this.airTime = 0;
     this.wrecked = false;
     this.ghost = false;
+    this.draft = 0; // slipstream 0..1 (CollisionSystem yazar)
+    this._draftEff = 0;
 
     this.trackS = 0;
     this.lateral = 0;
@@ -216,7 +244,7 @@ export class Car {
   wreck(cause) {
     if (this.wrecked || this.ghost) return;
     this.wrecked = true;
-    this._wreckTimer = T.wreckDuration;
+    this._wreckTimer = this.T.wreckDuration;
     if (this.drifting) this._endDrift();
     if (this.nitroActive) this._endNitro();
 
@@ -234,9 +262,26 @@ export class Car {
     this.events.push({ type: 'wreck', car: this, cause });
   }
 
+  // Mesh'i ve gölge düzlemini sahneden kaldırır; araca özel boya materyalini bırakır.
+  // Geometriler ve diğer materyaller modeller arasında paylaşıldığı için bırakılmaz.
+  dispose() {
+    if (this._disposed) return;
+    this._disposed = true;
+    if (this.mesh.parent) this.mesh.parent.remove(this.mesh);
+    const sh = this.parts.shadow;
+    if (sh && sh.parent) sh.parent.remove(sh);
+    if (this.parts.paint) this.parts.paint.dispose();
+  }
+
+  // Kamera görünümü: 'chase' | 'far' | 'hood' | 'bumper'. İç görünümlerde kameraya giren parçalar gizlenir.
+  setViewMode(view) {
+    this.viewMode = view;
+    this.parts.setViewMode(view);
+  }
+
   getRearWheelPositions(out) {
     const res = out || [new THREE.Vector3(), new THREE.Vector3()];
-    const c = D.rearContactLocal;
+    const c = this.dims.rearContactLocal;
     for (let i = 0; i < 2; i++) {
       res[i].set(c[i][0], c[i][1], c[i][2]);
       this.parts.model.localToWorld(res[i]);
@@ -246,7 +291,7 @@ export class Car {
 
   getExhaustPositions(out) {
     const res = out || [new THREE.Vector3(), new THREE.Vector3()];
-    const e = D.exhaustLocal;
+    const e = this.dims.exhaustLocal;
     for (let i = 0; i < 2; i++) {
       res[i].set(e[i][0], e[i][1], e[i][2]);
       this.parts.chassis.localToWorld(res[i]);
@@ -261,6 +306,8 @@ export class Car {
   update(dt, input, track) {
     if (!(dt > 0)) return;
     this._time += dt;
+    const draftT = this.draft > 0 ? (this.draft < 1 ? this.draft : 1) : 0;
+    this._draftEff += (draftT - this._draftEff) * damp(this.T.draftResponse, dt);
 
     // Dışarıdan `speed` yazılmışsa (ör. eski tip itme) farkı ileri yönde uygula.
     if (this.speed !== this._speedOut) {
@@ -280,7 +327,7 @@ export class Car {
       }
       const inp = this._readInput(input);
       this._updateNitro(dt, inp.nitro);
-      const grip = !this._inAir || this.airTime < T.jumpEventMinAir;
+      const grip = !this._inAir || this.airTime < this.T.jumpEventMinAir;
       if (grip) this._stepGround(dt, inp);
       else this._stepAir(dt, inp);
 
@@ -290,8 +337,8 @@ export class Car {
       this._collideWalls(dt, track, pr);
       this._followSurface(dt, track, inp);
 
-      if (this.drifting) this.addNitro(T.driftNitroRate * dt);
-      if (this.airborne) this.addNitro(T.airNitroRate * dt);
+      if (this.drifting) this.addNitro(this.T.driftNitroRate * dt);
+      if (this.airborne) this.addNitro(this.T.airNitroRate * dt);
     }
 
     this.speed = this.velocity.x * Math.sin(this.yaw) + this.velocity.z * Math.cos(this.yaw);
@@ -329,13 +376,13 @@ export class Car {
     this._prevNitroIn = pressed;
     if (edge) {
       if (this.nitroActive) {
-        if (this.nitroLevel === 'normal' && this._burstFull && this._burstTime <= T.doubleTapWindow) {
+        if (this.nitroLevel === 'normal' && this._burstFull && this._burstTime <= this.T.doubleTapWindow) {
           this._startNitro('shockwave');
-        } else if (this.nitroLevel !== 'shockwave' && this.nitroBurstProgress >= T.perfectWindow
-          && this.nitro >= T.nitroMinToFire) {
+        } else if (this.nitroLevel !== 'shockwave' && this.nitroBurstProgress >= this.T.perfectWindow
+          && this.nitro >= this.T.nitroMinToFire) {
           this._startNitro('perfect');
         }
-      } else if (this.nitro >= T.nitroMinToFire) {
+      } else if (this.nitro >= this.T.nitroMinToFire) {
         this._startNitro('normal');
       }
     }
@@ -352,12 +399,12 @@ export class Car {
     let duration;
     if (level === 'shockwave') {
       amount = this.nitro;
-      duration = T.shockwaveDuration;
+      duration = this.T.shockwaveDuration;
     } else {
-      amount = Math.min(T.nitroBurstAmount, this.nitro);
-      duration = Math.max(0.6, T.nitroBurstDuration * (amount / T.nitroBurstAmount));
+      amount = Math.min(this.T.nitroBurstAmount, this.nitro);
+      duration = Math.max(0.6, this.T.nitroBurstDuration * (amount / this.T.nitroBurstAmount));
     }
-    this._burstFull = level === 'normal' && this.nitro >= T.shockwaveMinBar;
+    this._burstFull = level === 'normal' && this.nitro >= this.T.shockwaveMinBar;
     this._burstTime = 0;
     this._burstDuration = duration;
     this._burstDrain = amount / duration;
@@ -376,7 +423,8 @@ export class Car {
   }
 
   _currentMaxSpeed() {
-    return this.nitroActive ? T.maxSpeed * NITRO_LEVELS[this.nitroLevel].speedMul : T.maxSpeed;
+    const base = this.T.maxSpeed * (1 + this.T.draftSpeedBonus * this._draftEff);
+    return this.nitroActive ? base * this.T.nitro[this.nitroLevel].speedMul : base;
   }
 
   // --- Yer sürüşü ----------------------------------------------------------------------------
@@ -402,18 +450,28 @@ export class Car {
     const Fn = F + a * dt;
     // Frenleme sıfırı geçmesin (geri vitese ayrıca geçilir); geri vites sınırı aşılmasın.
     if (inp.brake > 0 && F > 0 && Fn < 0) F = 0;
-    else if (Fn < -T.reverseMax && a < 0) F = Math.min(F, -T.reverseMax);
+    else if (Fn < -this.T.reverseMax && a < 0) F = Math.min(F, -this.T.reverseMax);
     else F = Fn;
     this._accelLong = lerp(this._accelLong, (F - F0) / dt, damp(8, dt));
 
     // Direksiyon: hıza duyarlı yaw oranı, yüksek hızda sınırlı (understeer).
     const absF = Math.abs(F);
-    const cap = absF > T.maxSpeed
-      ? lerp(T.yawRateHigh, T.yawRateNitro, clamp((absF - T.maxSpeed) / (T.maxSpeed * 0.38), 0, 1))
-      : lerp(T.yawRateLow, T.yawRateHigh, (absF / T.maxSpeed) ** 1.3);
-    const maxRate = Math.min(absF / T.minTurnRadius, cap);
+    const cap = absF > this.T.maxSpeed
+      ? lerp(this.T.yawRateHigh, this.T.yawRateNitro, clamp((absF - this.T.maxSpeed) / (this.T.maxSpeed * 0.38), 0, 1))
+      : lerp(this.T.yawRateLow, this.T.yawRateHigh, (absF / this.T.maxSpeed) ** 1.3);
+    const maxRate = Math.min(absF / this.T.minTurnRadius, cap);
     const target = -inp.steer * maxRate * (F >= 0 ? 1 : -1);
-    this.yawRate += (target - this.yawRate) * damp(T.yawResponse, dt);
+    // Drift çıkışında tutuş ve yaw tepkisi smoothstep ile kademeli geri gelir (ani "snap" yok).
+    let grip = 0;
+    let yawResp = this.T.yawResponse;
+    let gripMul = 1;
+    if (this._gripRecover > 0) {
+      this._gripRecover = Math.max(0, this._gripRecover - dt);
+      const r = smoothstep(0, 1, 1 - this._gripRecover / this.T.gripRecoverTime);
+      gripMul = lerp(this.T.gripRecoverStart, 1, r);
+      yawResp = lerp(this.T.yawResponseRecover, this.T.yawResponse, r);
+    }
+    this.yawRate += (target - this.yawRate) * damp(yawResp, dt);
     this.yaw = wrapAngle(this.yaw + this.yawRate * dt);
 
     // Hız vektörünü yeni gövde çerçevesine taşı, yanal kaymayı söndür.
@@ -423,48 +481,66 @@ export class Car {
     const c2 = Math.cos(this.yaw);
     F = wx * s2 + wz * c2;
     L = wx * -c2 + wz * s2;
-    const sf = clamp(absF / T.maxSpeed, 0, 1);
-    let grip = lerp(T.gripLow, T.gripHigh, sf);
-    if (this._gripRecover > 0) {
-      this._gripRecover = Math.max(0, this._gripRecover - dt);
-      grip *= lerp(1, 0.3, this._gripRecover / T.gripRecoverTime);
-    }
+    const sf = clamp(absF / this.T.maxSpeed, 0, 1);
+    grip = lerp(this.T.gripLow, this.T.gripHigh, sf) * gripMul;
     const L2 = L * Math.exp(-grip * dt);
     // Kaybolan yanal enerji ileri hıza aktarılır — yalnızca araba ileri yönde hareket ederken
     // (düşük hızda yandan itilen araba ileri fırlamasın).
     const sp = Math.sqrt(F * F + L * L);
     const align = sp > 0.01 ? Math.abs(F) / sp : 0;
-    const w = T.cornerTransfer * smoothstep(0.35, 0.75, align);
+    const w = this.T.cornerTransfer * smoothstep(0.35, 0.75, align);
     const F2 = Math.sqrt(F * F + (L * L - L2 * L2) * w) * (F >= 0 ? 1 : -1);
     v.x = F2 * s2 + L2 * -c2;
     v.z = F2 * c2 + L2 * s2;
+    this._trackSlip(dt);
+  }
+
+  // Normal sürüşte hız yönü ve slip açısının değişim hızını izler; drift'e girerken süreklilik için.
+  _trackSlip(dt) {
+    const v = this.velocity;
+    if (v.x * v.x + v.z * v.z < 9) {
+      this._slipValid = false;
+      return;
+    }
+    const th = Math.atan2(v.x, v.z);
+    const slip = wrapAngle(th - this.yaw);
+    if (this._slipValid) {
+      this._headRate += (wrapAngle(th - this._thPrev) / dt - this._headRate) * 0.5;
+      this._slipVel += (wrapAngle(slip - this._slipPrev) / dt - this._slipVel) * 0.5;
+    } else {
+      this._headRate = this.yawRate;
+      this._slipVel = 0;
+    }
+    this._thPrev = th;
+    this._slipPrev = slip;
+    this._slipValid = true;
   }
 
   _longitudinalAccel(F, inp) {
-    const nitro = this.nitroActive ? NITRO_LEVELS[this.nitroLevel] : null;
+    const nitro = this.nitroActive ? this.T.nitro[this.nitroLevel] : null;
     let a;
     if (inp.brake > 0) {
-      if (F > 0.5) a = -T.brakeDecel * inp.brake;
-      else a = F > -T.reverseMax ? -T.reverseAccel * inp.brake : 0;
+      if (F > 0.5) a = -this.T.brakeDecel * inp.brake;
+      else a = F > -this.T.reverseMax ? -this.T.reverseAccel * inp.brake : 0;
     } else if (inp.throttle > 0 || nitro) {
       const thr = nitro ? 1 : inp.throttle;
       if (F < -0.5) {
-        a = T.brakeDecel * 0.7;
+        a = this.T.brakeDecel * 0.7;
       } else {
         const vmax = this._currentMaxSpeed() * (0.4 + 0.6 * thr);
         if (F <= vmax) {
-          const thrust = (T.accel + (nitro ? nitro.thrust : 0)) * thr;
-          a = thrust * (1 - (Math.max(0, F) / vmax) ** T.accelExponent);
+          const thrust = (this.T.accel * (1 + this.T.draftAccelBonus * this._draftEff) + (nitro ? nitro.thrust : 0)) * thr;
+          a = thrust * (1 - (Math.max(0, F) / vmax) ** this.T.accelExponent);
         } else {
-          a = -(1 + (F - vmax) * T.overSpeedDecel);
-          if (thr < 1) a = Math.min(a, -T.coastDecel * (1 - thr));
+          a = -(1 + (F - vmax) * this.T.overSpeedDecel);
+          if (thr < 1) a = Math.min(a, -this.T.coastDecel * (1 - thr));
         }
       }
     } else {
-      a = Math.abs(F) > 0.2 ? -Math.sign(F) * T.coastDecel : -F * 4;
+      a = Math.abs(F) > 0.2 ? -Math.sign(F) * this.T.coastDecel : -F * 4;
     }
     // Yokuş: hafif yerçekimi etkisi (arcade).
-    a -= T.slopeGravity * this._slope;
+    a -= this.T.slopeGravity * this._slope;
     return a;
   }
 
@@ -472,13 +548,14 @@ export class Car {
 
   _updateDriftState(dt, inp, hs, F) {
     if (!this.drifting) {
-      if (inp.drift && Math.abs(inp.steer) > T.driftSteerThreshold && hs > T.driftMinSpeed && F > 0 && !this._inAir) {
+      if (inp.drift && Math.abs(inp.steer) > this.T.driftSteerThreshold && hs > this.T.driftMinSpeed && F > 0 && !this._inAir) {
         this.drifting = true;
         this.driftDir = Math.sign(inp.steer);
         this._driftTime = 0;
         this._driftRelease = 0;
         this._driftSteerRelease = 0;
         this._driftFlip = 0;
+        this._driftFresh = true;
         this.events.push({ type: 'drift_start', car: this });
       }
       return;
@@ -488,15 +565,15 @@ export class Car {
     this._driftSteerRelease = Math.abs(inp.steer) > 0.1 ? 0 : this._driftSteerRelease + dt;
     if (inp.steer * this.driftDir < -0.5) {
       this._driftFlip += dt;
-      if (this._driftFlip > T.driftFlipTime) {
+      if (this._driftFlip > this.T.driftFlipTime) {
         this.driftDir = -this.driftDir;
         this._driftFlip = 0;
       }
     } else {
       this._driftFlip = 0;
     }
-    if (this._driftRelease > T.driftReleaseGrace || this._driftSteerRelease > T.driftReleaseGrace + 0.05
-      || hs < T.driftExitSpeed) {
+    if (this._driftRelease > this.T.driftReleaseGrace || this._driftSteerRelease > this.T.driftReleaseGrace + 0.05
+      || hs < this.T.driftExitSpeed) {
       this._endDrift();
     }
   }
@@ -505,42 +582,72 @@ export class Car {
     if (!this.drifting) return;
     this.drifting = false;
     this.events.push({ type: 'drift_end', car: this, duration: this._driftTime });
-    this._gripRecover = T.gripRecoverTime;
+    this._gripRecover = this.T.gripRecoverTime;
+    this._slipValid = false;
     this.driftDir = 0;
   }
 
+  // Drift modeli: hız vektörü (th) komut edilen dönüş oranıyla döner; gövde yönü th - slip'tir.
+  // slip (gövde/hız açısı, işaretli) kritik sönümlü yayla hedefine yaklaşır: sıçrama/titreme yok, ivme
+  // basamaksız başlar. Hedef açı ve dönüş oranı direksiyonla doğrusal; direksiyon girdisi süzülür.
   _stepDrift(dt, inp, hs) {
+    const T = this.T;
     const v = this.velocity;
     const dir = this.driftDir;
-    const k = clamp(inp.steer * dir, -1, 1); // +1: drift yönüne tam, -1: karşı direksiyon
-    const angleTarget = k >= 0
-      ? lerp(T.driftAngleMid, T.driftAngleMax, k)
-      : lerp(T.driftAngleMid, T.driftAngleMin, -k);
-    const pr = T.driftPathRate;
-    let pathRate = k >= 0 ? lerp(pr[1], pr[2], k) : lerp(pr[1], pr[0], -k);
-    pathRate = Math.min(pathRate, hs / T.driftMinRadius);
-
     let th = Math.atan2(v.x, v.z);
-    th = wrapAngle(th - dir * pathRate * dt);
 
-    // Hız: drift hafif yavaşlatır; nitro drift sırasında da iter.
-    const ang = Math.abs(wrapAngle(th - this.yaw));
-    let a = -(T.driftDecelBase + T.driftDecelAngle * (ang / T.driftAngleMax));
-    if (this.nitroActive) {
-      const n = NITRO_LEVELS[this.nitroLevel];
-      const vmax = this._currentMaxSpeed();
-      if (hs < vmax) a += (T.accel + n.thrust) * 0.8 * (1 - (hs / vmax) ** T.accelExponent);
+    if (this._driftFresh) {
+      // Girişte mevcut durumdan devam et (açı, açısal hız, dönüş oranı süreklidir).
+      this._driftFresh = false;
+      this._driftSteer = inp.steer;
+      this._slip = wrapAngle(th - this.yaw);
+      if (!this._slipValid) this._slipVel = 0;
+      this._pathRate = this._slipValid ? this._headRate : -dir * T.driftPathRate[0];
+      this._slipTarget = this._slip;
+      this._driftOmega = T.driftSlipOmega;
+      this._driftDecel = this._accelLong;
     }
-    a -= T.slopeGravity * this._slope * 0.5;
-    const sp = Math.max(0, hs + a * dt);
-    this._accelLong = lerp(this._accelLong, a, damp(8, dt));
+    this._slipValid = false;
 
-    // Gövde hedef açıya yaylanır (arka savrulur).
+    // Analog direksiyon → hedef açı ve dönüş oranı (doğrusal).
+    this._driftSteer += (inp.steer - this._driftSteer) * damp(T.driftSteerRate, dt);
+    const k = clamp(this._driftSteer * dir, -1, 1); // +1: drift yönüne tam, -1: karşı direksiyon
+    const u = (k + 1) / 2;
+    const angleTarget = lerp(T.driftAngleMin, T.driftAngleMax, u);
+    const pathMag = Math.min(lerp(T.driftPathRate[0], T.driftPathRate[1], u), hs / T.driftMinRadius);
+    this._pathRate += (-dir * pathMag - this._pathRate) * damp(T.driftPathResponse, dt);
+    th = wrapAngle(th + this._pathRate * dt);
+
+    // Gövde açısı: süzülmüş hedef + kritik sönümlü yay (analitik, dt'den bağımsız kararlı).
+    const sT = dir * angleTarget;
+    this._slipTarget += (sT - this._slipTarget) * damp(T.driftSlipTargetRate, dt);
+    const crossing = this._slip * sT < 0; // sol↔sağ geçiş: açı sıfırdan geçecek
+    const omegaT = crossing ? T.driftSlipOmegaFlip : T.driftSlipOmega;
+    this._driftOmega += (omegaT - this._driftOmega) * damp(14, dt);
+    const w = this._driftOmega;
+    const e = this._slip - this._slipTarget;
+    const c = this._slipVel + w * e;
+    const decay = Math.exp(-w * dt);
+    this._slip = this._slipTarget + (e + c * dt) * decay;
+    this._slipVel = (this._slipVel - w * c * dt) * decay;
+
+    // Hız: drift hafif yavaşlatır (açıyla orantılı, süzülmüş); nitro drift sırasında da iter.
+    const ang = Math.abs(this._slip);
+    let aT = -(T.driftDecelBase + T.driftDecelAngle * (ang / T.driftAngleMax));
+    if (this.nitroActive) {
+      const n = T.nitro[this.nitroLevel];
+      const vmax = this._currentMaxSpeed();
+      if (hs < vmax) aT += (T.accel + n.thrust) * 0.8 * (1 - (hs / vmax) ** T.accelExponent);
+    }
+    aT -= T.slopeGravity * this._slope * 0.5;
+    this._driftDecel += (aT - this._driftDecel) * damp(T.driftDecelResponse, dt);
+    const sp = Math.max(0, hs + this._driftDecel * dt);
+    this._accelLong = lerp(this._accelLong, this._driftDecel, damp(8, dt));
+
     const yawPrev = this.yaw;
-    const targetYaw = th - dir * angleTarget;
-    this.yaw = wrapAngle(this.yaw + wrapAngle(targetYaw - this.yaw) * damp(T.driftSwing, dt));
+    this.yaw = wrapAngle(th - this._slip);
     this.yawRate = wrapAngle(this.yaw - yawPrev) / dt;
-    this.driftAngle = Math.abs(wrapAngle(th - this.yaw));
+    this.driftAngle = ang;
 
     v.x = Math.sin(th) * sp;
     v.z = Math.cos(th) * sp;
@@ -552,16 +659,17 @@ export class Car {
     const v = this.velocity;
     const hs = Math.hypot(v.x, v.z);
     // Havada sınırlı yaw; hız vektörü değişmez → inişte tutuş hizalar.
-    const maxRate = Math.min(hs / T.minTurnRadius, T.yawRateHigh) * T.airSteer;
+    this._slipValid = false;
+    const maxRate = Math.min(hs / this.T.minTurnRadius, this.T.yawRateHigh) * this.T.airSteer;
     const target = -inp.steer * maxRate;
     this.yawRate += (target - this.yawRate) * damp(6, dt);
     this.yaw = wrapAngle(this.yaw + this.yawRate * dt);
 
     let a = -0.6; // hava sürüklemesi
     if (this.nitroActive) {
-      const n = NITRO_LEVELS[this.nitroLevel];
+      const n = this.T.nitro[this.nitroLevel];
       const vmax = this._currentMaxSpeed();
-      if (hs < vmax) a += (T.accel + n.thrust) * 0.5 * (1 - (hs / vmax) ** T.accelExponent);
+      if (hs < vmax) a += (this.T.accel + n.thrust) * 0.5 * (1 - (hs / vmax) ** this.T.accelExponent);
     }
     if (hs > 0.1) {
       const k = Math.max(0, hs + a * dt) / hs;
@@ -574,7 +682,7 @@ export class Car {
   // --- Yol yüzeyi, kalkış, iniş --------------------------------------------------------------
 
   _followSurface(dt, track, inp) {
-    const g = T.gravity;
+    const g = this.T.gravity;
     const v = this.velocity;
     const h = track.heightAt(this.trackS, this.lateral);
     this._groundY = h;
@@ -589,7 +697,7 @@ export class Car {
 
     if (!this._inAir) {
       const yFree = y + v.y * dt - 0.5 * g * dt * dt;
-      if (yFree > h + T.liftEpsilon) {
+      if (yFree > h + this.T.liftEpsilon) {
         this._takeoff(track, inp);
         v.y -= g * dt;
         this.position.y = yFree;
@@ -608,7 +716,7 @@ export class Car {
     this.airTime += dt;
     v.y -= g * dt;
     this.position.y = y + v.y * dt;
-    if (!this._jumpEmitted && this.airTime >= T.jumpEventMinAir) {
+    if (!this._jumpEmitted && this.airTime >= this.T.jumpEventMinAir) {
       this._jumpEmitted = true;
       this.airborne = true;
       if (this.drifting) this._endDrift();
@@ -676,7 +784,7 @@ export class Car {
 
   _estimateFlightTime(track) {
     const v = this.velocity;
-    const g = T.gravity;
+    const g = this.T.gravity;
     const hs = Math.hypot(v.x, v.z);
     let t = 0.8;
     for (let i = 0; i < 4; i++) {
@@ -704,7 +812,7 @@ export class Car {
       roadVy = clamp((ahead - h) / 1.5, -0.8, 0.8) * hs;
     }
     const impact = Math.max(0, roadVy - v.y);
-    const hard = impact > T.hardLandingSpeed;
+    const hard = impact > this.T.hardLandingSpeed;
     if (this._jumpEmitted) {
       this.events.push({ type: 'land', car: this, airTime: this.airTime, hard });
     }
@@ -759,7 +867,7 @@ export class Car {
     if (vn > 0) {
       const angle = Math.atan2(vn, Math.abs(vt));
       strength = Math.max(strength, clamp(vn / 22, 0, 1));
-      if (!this.wrecked && !this.ghost && angle > T.wallWreckAngle && hs > T.wallWreckSpeed) {
+      if (!this.wrecked && !this.ghost && angle > this.T.wallWreckAngle && hs > this.T.wallWreckSpeed) {
         this._emitWallHit(1, side, smp);
         this.wreck('wall');
         v.x -= smp.rx * side * vn * 1.3;
@@ -773,7 +881,7 @@ export class Car {
       // Darbeye orantılı hız kaybı (Coulomb sürtünmesi gibi): sıyırmada küçük, sert darbede belirgin.
       const hs2 = Math.hypot(v.x, v.z);
       if (hs2 > 0.01) {
-        const dv = Math.min(hs2 * 0.4, vn * T.wallFriction + Math.max(0, vn - 3) * T.wallImpactLoss);
+        const dv = Math.min(hs2 * 0.4, vn * this.T.wallFriction + Math.max(0, vn - 3) * this.T.wallImpactLoss);
         const k = (hs2 - dv) / hs2;
         v.x *= k;
         v.z *= k;
@@ -783,7 +891,7 @@ export class Car {
     // Sürtünme kaybı (sabit) ve burnu duvara paralel hizalama (affedici).
     const hs3 = Math.hypot(v.x, v.z);
     if (hs3 > 0.01) {
-      const k = Math.max(0, hs3 - T.wallScrapeDecel * dt) / hs3;
+      const k = Math.max(0, hs3 - this.T.wallScrapeDecel * dt) / hs3;
       v.x *= k;
       v.z *= k;
     }
@@ -800,7 +908,7 @@ export class Car {
 
   _emitWallHit(strength, side, smp) {
     if (this._wallCooldown > 0) return;
-    this._wallCooldown = T.wallEventInterval;
+    this._wallCooldown = this.T.wallEventInterval;
     const point = new THREE.Vector3(
       this.position.x + smp.rx * side * this.halfWidth,
       this.position.y + 0.5,
@@ -834,7 +942,7 @@ export class Car {
   _updateWreck(dt, track) {
     this._wreckTimer -= dt;
     const v = this.velocity;
-    const g = T.gravity;
+    const g = this.T.gravity;
     v.y -= g * dt;
     this.position.x += v.x * dt;
     this.position.z += v.z * dt;
@@ -876,7 +984,7 @@ export class Car {
 
   _respawn(track) {
     const L = track.length || 1;
-    let s = this.trackS + T.respawnAhead;
+    let s = this.trackS + this.T.respawnAhead;
     // Rampaların üstüne / hemen önüne bırakma.
     for (let i = 0; i < 4; i++) {
       const r = this._rampNear(track, ((s % L) + L) % L, this.lateral, -8, 12, 50);
@@ -889,7 +997,7 @@ export class Car {
     this.position.set(smp.px + smp.rx * lat, 0, smp.pz + smp.rz * lat);
     this.position.y = track.heightAt(s, lat);
     this.yaw = Math.atan2(smp.tx, smp.tz);
-    const sp = T.maxSpeed * T.respawnSpeedFactor;
+    const sp = this.T.maxSpeed * this.T.respawnSpeedFactor;
     this.velocity.set(Math.sin(this.yaw) * sp, 0, Math.cos(this.yaw) * sp);
     this.trackS = s;
     this.lateral = lat;
@@ -899,7 +1007,7 @@ export class Car {
     this.airTime = 0;
     this.yawRate = 0;
     this.ghost = true;
-    this._ghostTimer = T.ghostDuration;
+    this._ghostTimer = this.T.ghostDuration;
     this._prevNitroIn = true; // basılı tutulan nitro hemen ateşlenmesin
     this._resetVisual();
     this.events.push({ type: 'respawn', car: this });
@@ -922,7 +1030,7 @@ export class Car {
     let rollT;
     let rate;
     if (!this._inAir && !this.wrecked) {
-      const a = (D.frontAxleZ - D.rearAxleZ) / 2;
+      const a = (this.dims.frontAxleZ - this.dims.rearAxleZ) / 2;
       const fs = sinY * smp.tx + cosY * smp.tz; // ileri vektörün pist bileşenleri
       const fl = sinY * smp.rx + cosY * smp.rz;
       const s = this.trackS;
@@ -974,7 +1082,7 @@ export class Car {
 
     // Tekerlekler: dönüş + ön direksiyon (drift'te karşı direksiyon görünümü).
     const fwdSpeed = v.x * sinY + v.z * cosY;
-    const spin = (fwdSpeed / D.wheelRadius) * dt;
+    const spin = (fwdSpeed / this.dims.wheelRadius) * dt;
     this._wheelSpin = (this._wheelSpin + spin) % (Math.PI * 2);
     const rearSpin = this.drifting ? spin * 1.25 : spin;
     this._rearSpin = (this._rearSpin + rearSpin) % (Math.PI * 2);
@@ -986,7 +1094,7 @@ export class Car {
       const velYaw = Math.atan2(v.x, v.z);
       steerVis = clamp(wrapAngle(velYaw - this.yaw), -0.55, 0.55);
     } else {
-      const maxA = lerp(0.55, 0.12, clamp(hs / T.maxSpeed, 0, 1));
+      const maxA = lerp(0.55, 0.12, clamp(hs / this.T.maxSpeed, 0, 1));
       steerVis = -this._inp.steer * maxA;
     }
     if (this.wrecked) steerVis = this._steerVis;
@@ -999,16 +1107,16 @@ export class Car {
     if (this.wrecked) {
       const r = this._wreckRot;
       vis.rotation.set(r.x, r.y, r.z);
-      vis.position.y = D.pivotY + 0.35 * Math.abs(Math.sin(r.z)) + 0.25 * Math.abs(Math.sin(r.x));
+      vis.position.y = this.dims.pivotY + 0.35 * Math.abs(Math.sin(r.z)) + 0.25 * Math.abs(Math.sin(r.x));
     } else if (this._trick) {
       const p = easeInOut(clamp(this._trickTime / this._trickDuration, 0, 1));
       const ang = p * Math.PI * 2 * this._trickDir;
       if (this._trick === 'roll') vis.rotation.set(0, 0, -ang);
       else vis.rotation.set(0, -ang, 0);
-      vis.position.y = D.pivotY + (this._trick === 'roll' ? 0.25 * Math.sin(p * Math.PI) : 0);
+      vis.position.y = this.dims.pivotY + (this._trick === 'roll' ? 0.25 * Math.sin(p * Math.PI) : 0);
     } else {
       vis.rotation.set(0, 0, 0);
-      vis.position.y = D.pivotY;
+      vis.position.y = this.dims.pivotY;
     }
     if (this.drifting) this._lastDriftDir = this.driftDir;
 
@@ -1056,6 +1164,18 @@ export class Car {
     this._driftFlip = 0;
     this._lastDriftDir = 1;
     this._gripRecover = 0;
+    this._driftFresh = false;
+    this._driftSteer = 0;
+    this._slip = 0;
+    this._slipVel = 0;
+    this._slipTarget = 0;
+    this._pathRate = 0;
+    this._driftOmega = this.T.driftSlipOmega;
+    this._driftDecel = 0;
+    this._slipValid = false;
+    this._headRate = 0;
+    this._thPrev = 0;
+    this._slipPrev = 0;
     this._inAir = false;
     this._jumpEmitted = false;
     this._trick = null;
@@ -1092,7 +1212,7 @@ export class Car {
     this._wreckSpin.set(0, 0, 0);
     const P = this.parts;
     P.visual.rotation.set(0, 0, 0);
-    P.visual.position.y = D.pivotY;
+    P.visual.position.y = this.dims.pivotY;
     P.visual.visible = true;
     P.chassis.position.y = 0;
     P.chassis.rotation.set(0, 0, 0);

@@ -3,9 +3,11 @@
 //   scenario=drive|jump|roll|spin|crest|wall|tunnel|showroom   (varsayılan drive)
 //   view=front|rear|side|top|q1|q2|q3|q4   (showroom yakın çekim açısı)
 //   cam=race|menu|countdown|finish        (ChaseCamera modu)
+//   car=vortex|raijin|titan  lineup=1 (showroom: üç aracı yan yana; view=lq1|lfront|lrear|lside|ltop)  viewmode=chase|far|hood|bumper
 //   bots=N  speed=N  pauseAt=saniye  autopilot=1  color=hex  nitro=0..1  kmh=N  lat=N  s=N  touch=1
 import * as THREE from 'three';
 import { Car } from '../../src/car.js';
+import { CARS, getCarDef } from '../../src/cars.js';
 import { Controls } from '../../src/controls.js';
 import { ChaseCamera } from '../../src/camera.js';
 import { TestTrack } from './test-track.js';
@@ -68,10 +70,20 @@ const controls = new Controls(renderer.domElement);
 const chase = new ChaseCamera(camera);
 
 const COLORS = [0xe8101a, 0xffb000, 0xf5f5f5, 0x18c060, 0x8a2be2, 0x222428, 0xff4fa0];
-const player = new Car({ scene, color: params.has('color') ? parseInt(params.get('color'), 16) : 0x1677ff, name: 'SEN', isPlayer: true });
+const carDef = getCarDef(params.get('car'));
+const player = new Car({ scene, color: params.has('color') ? parseInt(params.get('color'), 16) : (params.has('car') ? carDef.color : 0x1677ff), name: 'SEN', isPlayer: true, spec: carDef });
 const cars = [player];
+const lineup = params.has('lineup');
 const nBots = num('bots', scenario === 'drive' ? 7 : 0);
-for (let i = 0; i < nBots; i++) cars.push(new Car({ scene, color: COLORS[i % COLORS.length], name: `Bot${i}`, isPlayer: false }));
+for (let i = 0; i < nBots; i++) cars.push(new Car({ scene, color: COLORS[i % COLORS.length], name: `Bot${i}`, isPlayer: false, spec: CARS[(i + 1) % CARS.length] }));
+// Showroom yan yana dizilimi: ortadaki araç odak noktasıdır.
+let focus = player;
+if (lineup) {
+  cars.length = 0;
+  CARS.forEach((def, i) => cars.push(new Car({ scene, color: def.color, name: def.name, isPlayer: i === 1, spec: def })));
+  focus = cars[1];
+  player.dispose();
+}
 
 function place(car, s, lat, kmh) {
   const smp = track.sample(s);
@@ -104,6 +116,11 @@ if (sc0.yaw) {
   player.speed = sp;
 }
 player.nitro = num('nitro', 0.5);
+if (lineup) {
+  cars.forEach((c, i) => place(c, num('s', sc0.s), (i - 1) * 5.2, 0));
+  cars.forEach((c) => { c.update(1 / 60, { throttle: 0 }, track); });
+}
+if (params.has('viewmode')) cars.forEach((c) => c.setViewMode(params.get('viewmode')));
 if (scenario === 'drive') {
   const grid = track.getStartGrid(cars.length);
   cars.forEach((c, i) => {
@@ -168,6 +185,7 @@ function step() {
 
 // Showroom yakın çekim açıları (chase kamerası yerine sabit).
 const VIEWS = {
+  lq1: [-9.5, 2.3, 11], lfront: [0, 1.8, 15], lrear: [3, 2.2, -15], lside: [-17, 1.3, 0], ltop: [0.01, 15, 0.5],
   front: [0, 1.2, 7.5], rear: [0, 1.3, -7.5], side: [-7.8, 1.0, 0], top: [0.01, 9, 0.5],
   q1: [-4.8, 1.6, 5.4], q2: [4.8, 1.3, -5.4], q3: [-5.2, 0.7, -4.6], q4: [4.6, 2.4, 5.0], wheel: [-3.2, 0.6, 2.4],
 };
@@ -205,8 +223,8 @@ function frame() {
     camera.updateProjectionMatrix();
     names.forEach((n, i) => {
       const v = VIEWS[n] || VIEWS.q1;
-      const p = player.position;
-      const off = new THREE.Vector3(v[0], v[1], v[2]).applyAxisAngle(new THREE.Vector3(0, 1, 0), player.yaw);
+      const p = focus.position;
+      const off = new THREE.Vector3(v[0], v[1], v[2]).applyAxisAngle(new THREE.Vector3(0, 1, 0), focus.yaw);
       camera.position.copy(p).add(off);
       camera.lookAt(p.x, p.y + (n === 'wheel' ? 0.35 : 0.55), p.z);
       const x = (i % 3) * cw;
@@ -219,10 +237,18 @@ function frame() {
     renderer.setViewport(0, 0, W, H);
     dbg.textContent = '';
     return;
+  } else if (view === 'hoodcam' || view === 'bumpercam') {
+    // İç görünüm testi: kamera aracın viewAnchors noktasında (setViewMode ile birlikte kullanın).
+    const f = focus;
+    f.mesh.updateMatrixWorld(true);
+    camera.position.copy(f.viewAnchors[view === 'hoodcam' ? 'hood' : 'bumper']).applyMatrix4(f.mesh.matrixWorld);
+    camera.fov = num('fov', 75);
+    camera.updateProjectionMatrix();
+    camera.lookAt(camera.position.x + Math.sin(f.yaw) * 20, camera.position.y - 0.5, camera.position.z + Math.cos(f.yaw) * 20);
   } else if (view && VIEWS[view]) {
     const v = VIEWS[view];
-    const p = player.position;
-    const off = new THREE.Vector3(v[0], v[1], v[2]).applyAxisAngle(new THREE.Vector3(0, 1, 0), player.yaw);
+    const p = focus.position;
+    const off = new THREE.Vector3(v[0], v[1], v[2]).applyAxisAngle(new THREE.Vector3(0, 1, 0), focus.yaw);
     camera.position.copy(p).add(off);
     camera.fov = num('fov', 40);
     camera.updateProjectionMatrix();
