@@ -69,6 +69,8 @@ const _fwdW = new THREE.Vector3();
 const _anchorOff = new THREE.Vector3();
 const _lookOff = new THREE.Vector3();
 
+// Görsel (ara değerli) yaw; Car.renderYaw yoksa fizik yaw.
+const carYaw = (car) => car.renderYaw ?? car.yaw;
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const damp = (rate, dt) => 1 - Math.exp(-rate * dt);
 const wrapAngle = (a) => {
@@ -211,13 +213,13 @@ export class ChaseCamera {
     dt = Math.max(0, Math.min(dt || 0, 0.1));
     this.time += dt;
     this.modeTime += dt;
-    _carPos.copy(car.position);
+    _carPos.copy(car.renderPosition ?? car.position);
     this.lastCar = car;
     this.syncCarView(car);
     if (!this.povActive(car)) this.povValid = false;
 
     if (!this.initialized) {
-      this.camYaw = car.yaw;
+      this.camYaw = carYaw(car);
       this.camY = _carPos.y + RACE.height;
       this.lookY = _carPos.y + RACE.lookHeight;
       this.initialized = true;
@@ -239,7 +241,7 @@ export class ChaseCamera {
       this.blendLookFrom.copy(this.lookOffset);
       this.blendT = 0;
       this.blendDur = 1.0;
-      this.camYaw = car.yaw;
+      this.camYaw = carYaw(car);
       this.camY = _carPos.y + RACE.height;
       this.lookY = _carPos.y + RACE.lookHeight;
       this.resetSprings();
@@ -299,11 +301,11 @@ export class ChaseCamera {
     this.airK += ((car.airborne ? 1 : 0) - this.airK) * damp(6, dt);
 
     // Kamera yönü: normalde gövdeyi, drift'te hız vektörünü izler (arabanın yan açısı görünsün).
-    let heading = car.yaw;
+    let heading = carYaw(car);
     if (hs > 4 && car.speed > -1) {
       const velYaw = Math.atan2(v.x, v.z);
       const w = 0.25 + (0.62 - 0.25) * this.driftK;
-      heading = car.yaw + wrapAngle(velYaw - car.yaw) * w;
+      heading = carYaw(car) + wrapAngle(velYaw - carYaw(car)) * w;
     }
     let yawOmega = RACE.yawOmega + (RACE.yawOmegaDrift - RACE.yawOmega) * this.driftK;
     yawOmega += (RACE.yawOmegaAir - yawOmega) * this.airK;
@@ -394,12 +396,12 @@ export class ChaseCamera {
     const ang = (1 - k) * 2.55; // 0 = tam arkada; + arabanın soluna doğru
     const radius = 7.2 + (RACE.distance - 7.2) * k;
     const height = 0.9 + (RACE.height - 0.9) * k;
-    const back = car.yaw + Math.PI + ang;
+    const back = carYaw(car) + Math.PI + ang;
     _desiredOff.set(Math.sin(back) * radius, height, Math.cos(back) * radius);
     const la = RACE.lookAhead * k;
-    _desiredLook.set(Math.sin(car.yaw) * la, 0.6 + (RACE.lookHeight - 0.6) * k, Math.cos(car.yaw) * la);
+    _desiredLook.set(Math.sin(carYaw(car)) * la, 0.6 + (RACE.lookHeight - 0.6) * k, Math.cos(carYaw(car)) * la);
     // Yarış moduna kesintisiz devir için iç durumu güncel tut.
-    this.camYaw = car.yaw;
+    this.camYaw = carYaw(car);
     this.dist = RACE.distance;
     this.camY = _carPos.y + height;
     this.lookY = _carPos.y + _desiredLook.y;
@@ -409,10 +411,10 @@ export class ChaseCamera {
   }
 
   computeOrbit(dt, car, o) {
-    const ang = car.yaw + Math.PI + o.start + this.modeTime * o.speed;
+    const ang = carYaw(car) + Math.PI + o.start + this.modeTime * o.speed;
     _desiredOff.set(Math.sin(ang) * o.radius, o.height, Math.cos(ang) * o.radius);
     _desiredLook.set(0, o.look, 0);
-    this.camYaw = car.yaw;
+    this.camYaw = carYaw(car);
     this.camY = _carPos.y + RACE.height;
     this.lookY = _carPos.y + RACE.lookHeight;
     this.roll += (0 - this.roll) * damp(3, dt);
@@ -430,7 +432,7 @@ export class ChaseCamera {
         this.wreckPos.copy(this.camera.position);
       } else {
         // Kamera henüz yerleşmemişse arabanın arkasından başla.
-        this.wreckPos.set(-Math.sin(car.yaw) * RACE.distance, RACE.height, -Math.cos(car.yaw) * RACE.distance).add(_carPos);
+        this.wreckPos.set(-Math.sin(carYaw(car)) * RACE.distance, RACE.height, -Math.cos(carYaw(car)) * RACE.distance).add(_carPos);
       }
       // Kamera bir süre arabanın momentumuyla kayar, sonra durur.
       this.wreckVel.copy(car.velocity).multiplyScalar(0.55);
