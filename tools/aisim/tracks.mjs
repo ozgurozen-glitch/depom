@@ -14,6 +14,8 @@ export class PolyTrack {
     const n = verts.length;
     const R = (i) => (Array.isArray(radii) ? radii[i] : radii);
     const pts = [];
+    const idxA = new Int32Array(n);
+    const idxB = new Int32Array(n);
     for (let i = 0; i < n; i++) {
       const P = verts[i];
       const A = verts[(i - 1 + n) % n];
@@ -44,13 +46,34 @@ export class PolyTrack {
       const steps = Math.max(4, Math.ceil((Math.abs(theta) * r) / 0.25));
       const u0x = ax - cx;
       const u0z = az - cz;
+      idxA[i] = pts.length;
       pts.push([ax, az]);
       for (let k = 1; k < steps; k++) {
         const phi = (theta * k) / steps;
         pts.push([cx + u0x * Math.cos(phi) - u0z * Math.sin(phi), cz + u0x * Math.sin(phi) + u0z * Math.cos(phi)]);
       }
+      idxB[i] = pts.length;
       pts.push([bx, bz]);
     }
+    // başlangıç çizgisi: en uzun düzlüğün ortası (ızgara düzlükte olsun)
+    let bestLen = -1;
+    let bestStart = 0;
+    for (let i = 0; i < n; i++) {
+      const a = idxB[i];
+      const b = idxA[(i + 1) % n];
+      const pa = pts[a];
+      const pb = pts[b];
+      const len = Math.hypot(pb[0] - pa[0], pb[1] - pa[1]);
+      if (len > bestLen) {
+        bestLen = len;
+        bestStart = a;
+      }
+    }
+    // noktaları en uzun düzlüğün başına döndür, sonra s=0 düzlüğün ortasında olacak şekilde ofsetle
+    const rot = pts.slice(bestStart).concat(pts.slice(0, bestStart));
+    pts.length = 0;
+    for (const q of rot) pts.push(q);
+    const startOffset = bestLen / 2;
     const m = pts.length;
     const cum = new Float64Array(m + 1);
     for (let i = 0; i < m; i++) {
@@ -68,7 +91,8 @@ export class PolyTrack {
     this.tz = new Float64Array(this.N);
     let j = 0;
     for (let i = 0; i < this.N; i++) {
-      const s = i * this.seg;
+      const s = (i * this.seg + startOffset) % total;
+      if (s < cum[j]) j = 0;
       while (cum[j + 1] < s) j++;
       const a = pts[j];
       const b = pts[(j + 1) % m];

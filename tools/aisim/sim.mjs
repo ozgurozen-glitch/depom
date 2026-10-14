@@ -156,6 +156,7 @@ export async function runRace(opts) {
       } else if (evt.type === 'bump') {
         const e = entries.find((x) => x.car === evt.car);
         if (e) e.m.bumps++;
+        for (const x of entries) if (x.car === evt.car || x.car === evt.other) x.m.lastBumpT = time;
       } else if (evt.type === 'slipstream_start') {
         const e = entries.find((x) => x.car === evt.car);
         if (e) e.m.slipStarts++;
@@ -198,6 +199,11 @@ export async function runRace(opts) {
           case 'wall_hit':
             m.wallHits++;
             if (evt.strength > 0.5) m.wallHard++;
+            if (evt.strength > 0.5) {
+              if (time - (m.lastBumpT ?? -9) < 1.2) m.wallAfterBump = (m.wallAfterBump || 0) + 1;
+              else if (e.driver.avoidActive || e.driver.otState || e.driver.defendActive) m.wallDuringManeuver = (m.wallDuringManeuver || 0) + 1;
+              else m.wallClean = (m.wallClean || 0) + 1;
+            }
             if (m.incidents.length < 400) m.incidents.push({ k: evt.strength > 0.5 ? 'hard' : 'wall', str: +evt.strength.toFixed(2), s: Math.round(car.trackS), kmh: Math.round(car.speed * 3.6), t: +time.toFixed(1), lat: +car.lateral.toFixed(1) });
             break;
           case 'wreck':

@@ -74,9 +74,9 @@ export const PROFILES = {
   hard: {
     skillPull: 0.6,
     speedRatio: [0.97, 1.0],
-    latAccelMul: 1.25,
-    capacityUse: [0.9, 0.97],
-    brakeMargin: 0.9,
+    latAccelMul: 1.6,
+    capacityUse: [0.92, 0.98],
+    brakeMargin: 0.95,
     brakeReaction: -0.1,
     lineFollow: [0.9, 1.0],
     wanderMul: 0.35,

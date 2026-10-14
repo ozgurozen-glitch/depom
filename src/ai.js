@@ -20,6 +20,9 @@ export const TUNING = {
   lookaheadMin: 9,
   lookaheadMax: 55,
   lookaheadCurve: 8, // ileri bakış 1/(1 + curve·|κ|) ile kısalır (sıkı virajda keskin takip)
+  slopeK: 4, // hedef yanal eğim sınırı = slopeK / hız (m/s) → yüksek hızda yola göre en çok ~5° sapma
+  slopeMin: 0.07,
+  slopeMax: 0.3,
   steerSlew: 8, // 1/s, direksiyon çıkışının en hızlı değişimi
   steerFilterTau: 0.1, // s, arabaya uygulanan direksiyonun tahmini (öğrenme için)
   latAccelBase: 24, // m/s², en düşük yetenekte viraj ivmesi
@@ -328,6 +331,9 @@ export class BotDriver {
     ld *= 1 - 0.3 * guard;
     const sT = s + ld;
     let latT = this.baseLatAt(sT);
+    // yarış çizgisini kovalarken yoldan sapma açısını hıza göre sınırla (yüksek hızda çapraz kesme → S virajda dışa savrulma)
+    const slope = clamp(TUNING.slopeK / Math.max(vF, 10), TUNING.slopeMin, TUNING.slopeMax);
+    latT = clamp(latT, lat - slope * ld, lat + slope * ld);
     if (this.overrideW > 0) latT += (this.overrideLat - latT) * this.overrideW;
     const limT = Math.max(0, line.halfWidthAt(sT) - TUNING.edge);
     if (!this.attackTarget && (this.laneMin > -1e8 || this.laneMax < 1e8)) {
