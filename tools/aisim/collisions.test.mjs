@@ -123,7 +123,7 @@ console.log('\n# Slipstream');
   }
   const starts = count(ev, 'slipstream_start');
   const ends = count(ev, 'slipstream_end');
-  check('sınırda titreşimde her 0.2 s'lik açık dönem için en çok bir olay', starts <= 26 && ends <= 26 && Math.abs(starts - ends) <= 1, `starts=${starts} ends=${ends}`);
+  check('sınırda titreşimde açık dönem başına en çok bir olay', starts <= 26 && ends <= 26 && Math.abs(starts - ends) <= 1, `starts=${starts} ends=${ends}`);
   // 0..1 aralığı
   let ok = true;
   const cs2 = new CollisionSystem();
