@@ -14,6 +14,10 @@ export const TRACKS = [
     create(scene, renderer) {
       const track = new Track(scene);
       const environment = new Environment(scene, renderer, track);
+      scene.userData.grade = {
+        contrast: 1.06, saturation: 1.08, exposure: 1.0, shadows: [0.97, 0.97, 1.04], highlights: [1.07, 1.0, 0.91],
+        bloomStrength: 0.5, bloomThreshold: 0.95,
+      };
       return { track, environment };
     },
   },
@@ -25,6 +29,10 @@ export const TRACKS = [
     create(scene, renderer) {
       const track = new BangkokTrack(scene);
       const environment = new BangkokEnvironment(scene, renderer, track);
+      scene.userData.grade = {
+        contrast: 1.1, saturation: 1.16, exposure: 1.0, shadows: [0.9, 0.97, 1.12], highlights: [1.0, 0.98, 1.03],
+        bloomStrength: 0.5, bloomThreshold: 0.85,
+      };
       return { track, environment };
     },
   },

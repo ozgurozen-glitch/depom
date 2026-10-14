@@ -126,6 +126,7 @@ export class Game {
     this.scene.background = null;
     this.scene.environment = null;
     this.scene.fog = null;
+    delete this.scene.userData.grade;
     this.track = null;
     this.environment = null;
   }
