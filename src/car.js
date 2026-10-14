@@ -113,7 +113,8 @@ const wrapS = (track, s) => {
 const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2);
 
 export class Car {
-  constructor({ scene, color, name, isPlayer }) {
+  constructor({ scene, color, name, isPlayer, spec = null }) {
+    this.spec = spec;
     this.name = name;
     this.color = color;
     this.isPlayer = Boolean(isPlayer);

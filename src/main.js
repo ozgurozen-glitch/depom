@@ -37,6 +37,9 @@ function boot() {
       skipMenu: params.has('skipmenu'),
       speed: Math.max(1, Number(params.get('speed')) || 1),
       muted: params.has('mute'),
+      track: params.get('track'),
+      car: params.get('car'),
+      difficulty: params.get('difficulty'),
     },
   });
   window.__game = game;

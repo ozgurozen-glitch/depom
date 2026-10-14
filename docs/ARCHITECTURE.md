@@ -226,3 +226,33 @@ export class AudioSystem {
   setMuted(bool)
 }
 ```
+
+## Sürüm 2 eklemeleri (çoklu pist/araç, kamera görünümleri, slipstream)
+
+**Kataloglar**
+- `src/tracks.js` → `TRACKS: [{ id, name, subtitle, laps, create(scene, renderer) → { track, environment } }]`.
+  Game pist değiştirirken `create` çağrısının sahneye eklediği tüm nesneleri kaldırır ve geometri/materyal/dokuları
+  serbest bırakır; sahneye eklenmeyen kaynaklar (render target, PMREM) için `track.dispose()` /
+  `environment.dispose()` (isteğe bağlı) çağrılır. `scene.background/environment/fog` sıfırlanır.
+- `src/cars.js` → `CARS: [{ id, name, class, model, color, stats: { speed, accel, handling, nitro } (0..1), tuning }]`,
+  `PAINT_COLORS`. `tuning`, Car'ın `CAR_TUNING` değerlerinin üzerine yazılır.
+
+**Car**: `new Car({ scene, color, name, isPlayer, spec })` — `spec` bir CARS girdisi (yoksa ilk araç).
+  `dispose()` mesh'leri sahneden kaldırır. `draft: number` (0..1) — CollisionSystem her adım yazar; Car azami hız
+  ve ivmeye en fazla ~%8 ekler. `setViewMode(view)` — kamera iç görünümdeyken gövdenin kameraya giren
+  parçalarını gizler.
+
+**ChaseCamera**: `cycleView() → view` (`'chase' | 'far' | 'hood' | 'bumper'`), `setView(view)`, `view`.
+  **Controls**: `consumeCameraToggle() → bool` (C tuşu, gamepad Y, dokunmatik kamera düğmesi).
+
+**BotDriver** seçenekleri: `difficulty: 'easy' | 'normal' | 'hard'`.
+
+**HUD**:
+- `showMenu({ trackName, carName, tracks, cars, colors, difficulties, selection, onChange(sel), onStart(sel) })`;
+  `selection = { trackId, carId, color, difficulty }`. `onChange` önizleme içindir (pist/araç arkada değişir).
+  `tracks[i].record = { bestTime, bestLap, carId } | null`.
+- `showPause(visible, { onResume, onRestart, onMenu })`
+- `showResults(rows, onRestart, { record, trackName, onMenu })` — `record = { newBestTime, newBestLap, bestTime, bestLap }`.
+
+**Yeni olaylar**: `camera_view` (car, view) — Game; `slipstream_start` / `slipstream_end` (car, other) — CollisionSystem.
+**URL parametreleri** (test): `?track=<id>&car=<id>&difficulty=easy|normal|hard`.

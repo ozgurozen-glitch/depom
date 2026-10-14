@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
-import { Track } from './track.js';
-import { Environment } from './environment.js';
+import { TRACKS, getTrackDef } from './tracks.js';
+import { CARS, PAINT_COLORS, getCarDef } from './cars.js';
 import { Car } from './car.js';
 import { Controls } from './controls.js';
 import { ChaseCamera } from './camera.js';
@@ -17,6 +17,29 @@ const PERFECT_START_WINDOW = [-0.3, 0.2]; // GO anına göre saniye
 const PICKUP_RADIUS = 3.2;
 const PICKUP_RESPAWN = 12;
 const RESULTS_DELAY = 2.5;
+const DIFFICULTIES = [
+  { id: 'easy', name: 'KOLAY', skillShift: -0.14 },
+  { id: 'normal', name: 'NORMAL', skillShift: 0 },
+  { id: 'hard', name: 'ZOR', skillShift: 0.06 },
+];
+const STORE_KEY = 'nitro-rush';
+
+// localStorage yalnızca kolaylık içindir (son seçim, rekorlar); erişilemezse sessizce yok sayılır.
+function loadStore() {
+  try {
+    return JSON.parse(window.localStorage.getItem(STORE_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveStore(data) {
+  try {
+    window.localStorage.setItem(STORE_KEY, JSON.stringify(data));
+  } catch {
+    /* yok say */
+  }
+}
 
 export class Game {
   constructor({ renderer, hudRoot, options }) {
@@ -26,8 +49,17 @@ export class Game {
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.3, 5000);
 
-    this.track = new Track(this.scene);
-    this.environment = new Environment(this.scene, renderer, this.track);
+    this.store = loadStore();
+    const saved = this.store.selection || {};
+    this.selection = {
+      trackId: getTrackDef(options.track || saved.trackId).id,
+      carId: getCarDef(options.car || saved.carId).id,
+      color: Number.isFinite(saved.color) ? saved.color : null,
+      difficulty: DIFFICULTIES.some((d) => d.id === (options.difficulty || saved.difficulty))
+        ? (options.difficulty || saved.difficulty) : 'normal',
+    };
+    this.trackObjects = [];
+    this.loadTrack(this.selection.trackId);
     this.controls = new Controls(renderer.domElement);
     this.chaseCam = new ChaseCamera(this.camera);
     this.collisions = new CollisionSystem();
@@ -37,6 +69,7 @@ export class Game {
     this.audio.setMuted(Boolean(options.muted));
     this.hud.setTrack(this.track);
 
+    this.cars = [];
     this.createCars();
 
     this.state = 'menu'; // menu | countdown | racing | finished
@@ -51,23 +84,87 @@ export class Game {
     window.addEventListener('resize', () => this.resize());
   }
 
-  createCars() {
+  // Pisti (ve mekânı) kurar. Önceki pistin sahneye eklediği her şey kaldırılır ve GPU kaynakları bırakılır.
+  loadTrack(trackId) {
+    const def = getTrackDef(trackId);
+    if (this.track) this.unloadTrack();
+    const before = new Set(this.scene.children);
+    const { track, environment } = def.create(this.scene, this.renderer);
+    this.trackObjects = this.scene.children.filter((o) => !before.has(o));
+    this.track = track;
+    this.environment = environment;
+    this.trackDef = def;
+    this.laps = def.laps || CONFIG.laps;
+  }
+
+  unloadTrack() {
+    if (this.environment && this.environment.dispose) this.environment.dispose();
+    if (this.track && this.track.dispose) this.track.dispose();
+    const seen = new Set();
+    const free = (res) => {
+      if (res && !seen.has(res) && typeof res.dispose === 'function') {
+        seen.add(res);
+        res.dispose();
+      }
+    };
+    for (const root of this.trackObjects) {
+      this.scene.remove(root);
+      root.traverse((o) => {
+        free(o.geometry);
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        for (const m of mats) {
+          if (!m) continue;
+          for (const v of Object.values(m)) if (v && v.isTexture) free(v);
+          if (m.uniforms) for (const u of Object.values(m.uniforms)) if (u && u.value && u.value.isTexture) free(u.value);
+          free(m);
+        }
+      });
+    }
+    this.trackObjects = [];
+    if (this.scene.background && this.scene.background.isTexture) free(this.scene.background);
+    if (this.scene.environment) free(this.scene.environment);
+    this.scene.background = null;
+    this.scene.environment = null;
+    this.scene.fog = null;
+    this.track = null;
+    this.environment = null;
+  }
+
+  disposeCars() {
+    for (const car of this.cars) {
+      if (car.dispose) {
+        car.dispose();
+      } else {
+        this.scene.remove(car.mesh);
+        if (car.parts && car.parts.shadow) this.scene.remove(car.parts.shadow);
+      }
+    }
     this.cars = [];
+  }
+
+  createCars() {
+    this.disposeCars();
     this.drivers = new Map();
+    const diff = DIFFICULTIES.find((d) => d.id === this.selection.difficulty) || DIFFICULTIES[1];
+    const playerDef = getCarDef(this.selection.carId);
 
     for (let i = 0; i < CONFIG.botCount; i++) {
+      // Botlar katalogdaki araçları sırayla kullanır (oyuncunun seçtiğiyle başlamaz → çeşitlilik).
+      const def = CARS[(CARS.indexOf(playerDef) + 1 + i) % CARS.length];
       const car = new Car({
         scene: this.scene,
         color: CONFIG.botColors[i % CONFIG.botColors.length],
         name: CONFIG.botNames[i % CONFIG.botNames.length],
         isPlayer: false,
+        spec: def,
       });
       // Öndeki botlar daha yetenekli; ızgara sırası = zorluk sırası.
-      const skill = 0.95 - (i / Math.max(1, CONFIG.botCount - 1)) * 0.35;
+      const base = 0.95 - (i / Math.max(1, CONFIG.botCount - 1)) * 0.35;
       this.drivers.set(car, new BotDriver(car, this.track, {
-        skill,
+        skill: THREE.MathUtils.clamp(base + diff.skillShift, 0.3, 1),
         aggression: 0.3 + ((i * 37) % 10) / 15,
         preferredLane: ((i % 3) - 1) * 0.5,
+        difficulty: diff.id,
       }));
       this.cars.push(car);
     }
@@ -75,12 +172,83 @@ export class Game {
     // Asphalt'taki gibi oyuncu ızgaranın en arkasından başlar.
     this.player = new Car({
       scene: this.scene,
-      color: CONFIG.playerColor,
+      color: this.selection.color ?? playerDef.color ?? CONFIG.playerColor,
       name: CONFIG.playerName,
       isPlayer: true,
+      spec: playerDef,
     });
     this.cars.push(this.player);
     this.playerAutopilot = new BotDriver(this.player, this.track, { skill: 0.9, aggression: 0.5, preferredLane: 0 });
+  }
+
+  // Menüden gelen seçimi uygular (önizleme için de çağrılır). Değişen kısımları yeniden kurar.
+  applySelection(sel) {
+    const next = { ...this.selection, ...sel };
+    const trackChanged = next.trackId !== this.selection.trackId;
+    const carsChanged = trackChanged || next.carId !== this.selection.carId
+      || next.color !== this.selection.color || next.difficulty !== this.selection.difficulty;
+    this.selection = next;
+    this.store.selection = next;
+    saveStore(this.store);
+    if (trackChanged) {
+      this.loadTrack(next.trackId);
+      this.hud.setTrack(this.track);
+    }
+    if (carsChanged) {
+      this.createCars();
+      this.resetRace();
+    }
+  }
+
+  menuData() {
+    return {
+      trackName: this.trackDef.name,
+      carName: getCarDef(this.selection.carId).name,
+      tracks: TRACKS.map(({ id, name, subtitle, laps }) => ({ id, name, subtitle, laps, record: this.store.records?.[id] || null })),
+      cars: CARS.map(({ id, name, class: cls, stats, color }) => ({ id, name, class: cls, stats, color })),
+      colors: PAINT_COLORS,
+      difficulties: DIFFICULTIES.map(({ id, name }) => ({ id, name })),
+      selection: { ...this.selection },
+      onChange: (sel) => this.applySelection(sel),
+      onStart: (sel) => {
+        if (sel) this.applySelection(sel);
+        this.startCountdown();
+      },
+    };
+  }
+
+  showMenu() {
+    this.paused = false;
+    this.hud.showPause(false);
+    this.hud.showResults(null);
+    this.controls.setTouchVisible(false);
+    this.state = 'menu';
+    this.resetRace();
+    this.chaseCam.setMode('menu');
+    this.hud.showMenu(this.menuData());
+  }
+
+  // Oyuncunun en iyi tur/yarış süresini pist bazında saklar; yeni rekor bilgisini döndürür.
+  saveRecord() {
+    const id = this.trackDef.id;
+    const records = this.store.records || (this.store.records = {});
+    const prev = records[id] || {};
+    const time = this.player.finishTime;
+    const info = { newBestTime: false, newBestLap: false, bestTime: prev.bestTime ?? null, bestLap: prev.bestLap ?? null };
+    if (time !== null && (prev.bestTime == null || time < prev.bestTime)) {
+      info.newBestTime = prev.bestTime != null;
+      info.bestTime = time;
+      prev.bestTime = time;
+      prev.carId = this.selection.carId;
+    }
+    if (this.bestLap !== null && (prev.bestLap == null || this.bestLap < prev.bestLap)) {
+      info.newBestLap = prev.bestLap != null;
+      info.bestLap = this.bestLap;
+      prev.bestLap = this.bestLap;
+    }
+    records[id] = prev;
+    saveStore(this.store);
+    return info;
   }
 
   resetRace() {
@@ -123,11 +291,7 @@ export class Game {
     } else {
       this.state = 'menu';
       this.chaseCam.setMode('menu');
-      this.hud.showMenu({
-        trackName: this.track.name || CONFIG.trackName,
-        carName: CONFIG.carName,
-        onStart: () => this.startCountdown(),
-      });
+      this.hud.showMenu(this.menuData());
     }
     requestAnimationFrame(this.loop);
   }
@@ -157,6 +321,7 @@ export class Game {
     this.hud.showPause(this.paused, {
       onResume: () => this.togglePause(),
       onRestart: () => this.restart(),
+      onMenu: () => this.showMenu(),
     });
   }
 
@@ -176,6 +341,10 @@ export class Game {
 
     if (this.controls.consumePause()) this.togglePause();
     if (this.controls.consumeRestart() && this.state !== 'menu') this.restart();
+    if (this.controls.consumeCameraToggle && this.controls.consumeCameraToggle() && this.state !== 'menu') {
+      const view = this.chaseCam.cycleView ? this.chaseCam.cycleView() : null;
+      if (view) this.frameEvents.push({ type: 'camera_view', car: this.player, view });
+    }
 
     const speed = this.options.speed;
     if (!this.paused) {
@@ -245,7 +414,11 @@ export class Game {
     if (this.state === 'finished' && !this.resultsShown && this.raceTime - this.finishedAt > RESULTS_DELAY) {
       this.resultsShown = true;
       this.controls.setTouchVisible(false);
-      this.hud.showResults(this.buildResults(), () => this.restart());
+      this.hud.showResults(this.buildResults(), () => this.restart(), {
+        record: this.recordInfo,
+        trackName: this.trackDef.name,
+        onMenu: () => this.showMenu(),
+      });
     }
   }
 
@@ -332,19 +505,20 @@ export class Game {
           this.lapStart = this.raceTime;
           if (this.bestLap === null || this.lastLapTime < this.bestLap) this.bestLap = this.lastLapTime;
         }
-        if (car.lap >= CONFIG.laps) {
+        if (car.lap >= this.laps) {
           car.finished = true;
           car.finishTime = this.raceTime;
           this.finishOrder.push(car);
           this.frameEvents.push({ type: 'finish', car, place: this.finishOrder.length });
           if (car === this.player) {
+            this.recordInfo = this.saveRecord();
             this.state = 'finished';
             this.finishedAt = this.raceTime;
             this.chaseCam.setMode('finish');
           }
         } else {
           this.frameEvents.push({ type: 'lap', car, lap: car.lap });
-          if (car.lap === CONFIG.laps - 1) this.frameEvents.push({ type: 'final_lap', car });
+          if (car.lap === this.laps - 1) this.frameEvents.push({ type: 'final_lap', car });
         }
       }
     }
@@ -359,7 +533,7 @@ export class Game {
   }
 
   buildResults() {
-    const total = CONFIG.laps * this.track.length;
+    const total = this.laps * this.track.length;
     const rows = this.cars.map((car) => {
       let time = car.finishTime;
       if (time === null) {
@@ -403,8 +577,8 @@ export class Game {
       nitroBurstProgress: p.nitroBurstProgress ?? null,
       place: p.place,
       totalCars: this.cars.length,
-      lap: Math.min(CONFIG.laps, Math.max(1, p.lap + 1)),
-      totalLaps: CONFIG.laps,
+      lap: Math.min(this.laps, Math.max(1, p.lap + 1)),
+      totalLaps: this.laps,
       raceTime: this.state === 'racing' || this.state === 'finished' ? this.raceTime : 0,
       lapTime: this.state === 'racing' ? this.raceTime - this.lapStart : 0,
       bestLap: this.bestLap,
