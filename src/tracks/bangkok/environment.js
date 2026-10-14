@@ -6,7 +6,9 @@ import { createNightSkyMaterial, createSkyMesh } from './sky.js';
 import { createContext, LOW_SPEC } from './context.js';
 import { buildRiver } from './river.js';
 import { buildCity } from './city.js';
-import { buildBts, buildExpressway, buildTemple, buildGantry } from './landmarks.js';
+import {
+  buildBts, buildExpressway, buildTemple, buildGantry, buildCableBridge,
+} from './landmarks.js';
 import { buildStreet } from './street.js';
 import { createDrizzle } from './rain.js';
 
@@ -99,6 +101,7 @@ export class BangkokEnvironment {
     const xw = buildExpressway(ctx);
     ctx.expresswayLamps = xw.lampSpots;
     buildGantry(ctx);
+    buildCableBridge(ctx);
     lap('landmarks');
     const city = buildCity(ctx);
     lap('city');

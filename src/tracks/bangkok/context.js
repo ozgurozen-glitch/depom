@@ -15,13 +15,17 @@ export function createContext(track, group) {
   const footprints = [];
   const sec = Object.fromEntries(track.sections.map((s) => [s.id, s]));
 
-  // Doğu kıyısı: kıyı yolunun (kuzeye giden düz kesimler) sol kenarından bankOffset dışarıda; uçlarda düz uzar.
+  // Doğu kıyısı (bank[]): kıyı yolunun (kuzeye giden düz kesimler) nehir tarafı kenarından bankOffset dışarıda
+  // (RIVER.side: nehir yolun sağında = 1 → yol batı yakada, doğu kıyısı bir nehir genişliği ötede); uçlarda düz uzar.
   const bank = [];
   const f = {};
+  const side = RIVER.side || -1;
   for (let s = sec.river.s0; s < sec.river.s1; s += 10) {
     frameAt(track, s, f);
     if (f.tz > -0.97) continue; // köşe yayları değil, kuzeye giden kesim
-    bank.push([f.x - f.rx * RIVER.bankOffset, f.z - f.rz * RIVER.bankOffset]);
+    const off = side * RIVER.bankOffset;
+    const extra = side > 0 ? RIVER.width : 0;
+    bank.push([f.x + f.rx * off + extra, f.z + f.rz * off]);
   }
   bank.sort((a, b) => a[1] - b[1]);
   bank.unshift([bank[0][0], -4000]);
