@@ -36,6 +36,7 @@ export class AudioSystem {
     this.scrape = 0;
     this.lastWallSound = -1;
     this.lastBumpSound = -1;
+    this.lastSlipstreamSound = -10;
     this.prevStateName = null;
     this.countdownBeepAt = -10;
     this.listener = { x: 0, y: 0, z: 0, yaw: 0, ok: false };
@@ -451,6 +452,20 @@ export class AudioSystem {
         break;
       case 'nitro_end':
         if (isMe) this.noiseHit({ type: 'bandpass', f0: 1800, f1: 500, q: 1, dur: 0.35, gain: 0.1 });
+        break;
+      case 'slipstream_start':
+        // Yumuşak, kısa rüzgâr: düşük bantlı gürültü yavaşça yükselip söner.
+        if (isMe && now - this.lastSlipstreamSound > 0.8) {
+          this.lastSlipstreamSound = now;
+          this.noiseHit({ type: 'bandpass', f0: 500, f1: 1500, q: 0.8, dur: 0.55, gain: 0.16, attack: 0.16, send: 0.12 });
+        }
+        break;
+      case 'camera_view':
+        // Hafif tık: çok kısa iki ton.
+        if (isMe) {
+          this.tone({ type: 'square', f0: 1800, f1: 1200, dur: 0.03, gain: 0.045, attack: 0.001, send: 0 });
+          this.tone({ type: 'sine', f0: 900, f1: 700, dur: 0.05, gain: 0.05, attack: 0.001, send: 0.05 });
+        }
         break;
       case 'near_miss':
         if (isMe) this.noiseHit({ type: 'bandpass', f0: 2800, f1: 450, q: 1.4, dur: 0.38, gain: 0.32, pan: Math.random() < 0.5 ? -0.7 : 0.7, attack: 0.05 });
