@@ -72,7 +72,8 @@ Her olayda `car` alanı (olayın sahibi Car) bulunur.
 ```js
 { throttle: 0..1, brake: 0..1, steer: -1..1, nitro: bool /* basılı tutuluyor */, drift: bool }
 ```
-Asphalt 8 gibi gaz **otomatiktir**: Controls, fren basılı değilken `throttle = 1` döndürür.
+Gaz **manueldir**: `throttle` gaz tuşuna (↑ / W, RT) basılıyken 1 olur; `brake` fren/geri tuşundan (↓ / S, LT),
+`drift` ise frenden ayrı el freni tuşundan (Space, B / X, DRIFT düğmesi) gelir.
 Nitro basma kenarlarını (rising edge) Car kendisi algılar.
 
 ## Track (`src/track.js`)

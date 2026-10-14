@@ -1005,13 +1005,15 @@ export class HUD {
   garageHelp(touch, cls) {
     const help = el('div', `nr-help ${cls}`);
     help.innerHTML = touch ? `
-      <span class="nr-help-keys"><span class="nr-key">◀</span><span class="nr-key">▶</span></span><span>Sol alttaki düğmelerle direksiyon</span>
-      <span class="nr-help-keys"><span class="nr-key">N</span><span class="nr-key">D</span></span><span>Sağ alt: nitro ve drift/fren · dolu barda çift dokun = shockwave</span>
+      <span class="nr-help-keys"><span class="nr-key">◀</span><span class="nr-key">▶</span></span><span>Sağ altta GAZ ve FREN pedalları, solda direksiyon, NITRO ve DRIFT düğmeleri</span>
+      <span class="nr-help-keys"><span class="nr-key">N</span></span><span>Nitro · dolu barda NITRO'ya çift dokun = shockwave</span>
       <span class="nr-help-keys"><span class="nr-key">II</span></span><span>Sağ üstteki düğmeyle duraklat</span>
-      <span class="nr-help-keys"><span class="nr-key">C</span></span><span>Üstteki kamera düğmesiyle kamera görünümü</span>` : `
+      <span class="nr-help-keys"><span class="nr-key">C</span></span><span>Sağ üstteki kamera düğmesiyle kamera görünümü</span>` : `
+      <span class="nr-help-keys"><span class="nr-key">↑</span><span class="nr-key">W</span></span><span>Gaz</span>
+      <span class="nr-help-keys"><span class="nr-key">↓</span><span class="nr-key">S</span></span><span>Fren / geri</span>
+      <span class="nr-help-keys"><span class="nr-key">Space</span></span><span>Drift (el freni)</span>
+      <span class="nr-help-keys"><span class="nr-key">Shift</span><span class="nr-key">N</span></span><span>Nitro · dolu barda çift bas = shockwave</span>
       <span class="nr-help-keys"><span class="nr-key">←</span><span class="nr-key">→</span></span><span>Direksiyon</span>
-      <span class="nr-help-keys"><span class="nr-key">↓</span><span class="nr-key">Space</span></span><span>Drift / fren</span>
-      <span class="nr-help-keys"><span class="nr-key">↑</span><span class="nr-key">Shift</span></span><span>Nitro · dolu barda çift bas = shockwave</span>
       <span class="nr-help-keys"><span class="nr-key">C</span></span><span>Kamera görünümü (takip · uzak · kaput · tampon)</span>
       <span class="nr-help-keys"><span class="nr-key">P</span><span class="nr-key">R</span><span class="nr-key">M</span></span><span>Duraklat · yeniden başlat · ses</span>`;
     return help;
