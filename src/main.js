@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
 import { Game } from './game.js';
+import { Diagnostics } from './diagnostics.js';
 
 function showBootError(message) {
   const el = document.getElementById('boot-error');
@@ -25,6 +26,7 @@ function boot() {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   container.appendChild(renderer.domElement);
+  const diagnostics = new Diagnostics(renderer);
 
   const params = new URLSearchParams(window.location.search);
   const game = new Game({
@@ -38,6 +40,9 @@ function boot() {
     },
   });
   window.__game = game;
+  game.effects.onFallback = () => diagnostics.note('Efekt zinciri siyah görüntü verdi; efektler kapatılıp doğrudan çizime geçildi.');
+  game.effects.onStillBlack = () => diagnostics.show('Efektler kapatıldıktan sonra da 3B sahne siyah çiziliyor.');
+  window.__diagnostics = diagnostics;
   game.start();
 }
 

@@ -20,7 +20,8 @@ import { createPostMaterial } from './fx/post.js';
 const QUALITY = [
   { name: 'low', msaa: 0, bloomScale: 0.5, samples: 4, particles: 0.4, maxPixelRatio: 0.85 },
   { name: 'medium', msaa: 0, bloomScale: 0.5, samples: 6, particles: 0.7, maxPixelRatio: 1.25 },
-  { name: 'high', msaa: 4, bloomScale: 1, samples: 8, particles: 1, maxPixelRatio: 4 },
+  // MSAA 4 yarım float hedeflerde yüksek çözünürlükte ~200 MB VRAM tutup bağlam kaybına yol açabiliyor.
+  { name: 'high', msaa: 2, bloomScale: 1, samples: 8, particles: 1, maxPixelRatio: 4 },
 ];
 const FPS_WARMUP = 2.5;     // s: shader derleme vb. ilk takılmaları ölçme
 const FPS_WINDOW = 3;       // s: ortalama penceresi
@@ -228,11 +229,8 @@ export class Effects {
   }
 
   render() {
-    if (this.direct) {
-      this.renderer.render(this.scene, this.camera);
-      return;
-    }
-    this.composer.render(this.lastDt);
+    if (this.direct) this.renderer.render(this.scene, this.camera);
+    else this.composer.render(this.lastDt);
     this.checkBlackFrame();
   }
 
@@ -259,10 +257,17 @@ export class Effects {
       if (this.probe[0] + this.probe[1] + this.probe[2] > 6) lit++;
     }
     this.blackStreak = lit === 0 ? this.blackStreak + 1 : 0;
-    if (this.blackStreak >= 3) {
+    if (this.blackStreak < 3) return;
+    this.blackStreak = 0;
+    if (!this.direct) {
+      // İlk çare: son-işlemeyi kapatıp doğrudan çiz, sonra yeniden kontrol et.
       this.direct = true;
-      this.blackChecksLeft = 0;
+      this.blackChecksLeft = 12;
       console.warn('Efekt zinciri siyah görüntü üretiyor; son-işleme kapatıldı, doğrudan çizime geçildi.');
+      if (this.onFallback) this.onFallback();
+    } else {
+      this.blackChecksLeft = 0;
+      if (this.onStillBlack) this.onStillBlack();
     }
   }
 
