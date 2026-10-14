@@ -32,6 +32,8 @@ export const TUNING = {
   cornerLane: 0, // viraj içinde şerit tercihinin payı (0 = yalnızca düzlükte)
   laneBias: 3, // m, preferredLane = ±1 düzlükte bu kadar yana kayar
   avoidBehind: 4.5, // m, arkada kalmış ama yanımızdaki arabayı da say
+  followBrakeLead: 1, // s: öndeki yavaşlıyorsa hedef hızdan (yavaşlama · bu süre) düş
+  followGap: 10, // m: slipstream takibinde öndekiyle hedef mesafe
   cornerGap: 20, // m: sıkı viraj girişinde öndekiyle hedef mesafe
   tightCorner: 0.004, // 90 m içinde bu eğrilikten sıkı viraj varsa öndekiyle mesafe koru
   alongside: 5, // m: bundan az önde (ya da arkada) olan araba 'yanımızda' sayılır
@@ -165,6 +167,8 @@ export class BotDriver {
     this.otCooldown = 1 + this.rng() * 2;
     this.otFollowSpeed = Infinity;
     this.otSeen = null;
+    this.otPrevSpeed = 0;
+    this.otAcc = 0;
     this.otAccept = false;
     this.otCheck = 0;
 
@@ -823,7 +827,11 @@ export class BotDriver {
           return;
         }
         this.otLat = clamp(v.lateral, -lim, lim);
-        this.otFollowSpeed = v.speed + clamp((ds - 7) * 0.9, -4, 14) + 2;
+        // öndeki sertçe yavaşlıyorsa (viraj freni) tepki gecikmemizi kapatmak için ek pay bırak
+      const acc = (v.speed - this.otPrevSpeed) / dt;
+      this.otPrevSpeed = v.speed;
+      this.otAcc += (acc - this.otAcc) * 0.2;
+      this.otFollowSpeed = v.speed + clamp((ds - TUNING.followGap) * 0.9, -6, 14) + 1 + Math.min(0, this.otAcc) * TUNING.followBrakeLead;
         const straight = kNear < 1 / 110;
         const swingDist = clamp(9 + closing * 1.0, 11, 26);
         if (straight && ((ds <= swingDist && closing > 0.8) || ds <= 11 || (closing > 7 && ds < 26))
@@ -883,6 +891,8 @@ export class BotDriver {
     this.otSide = 0;
     this.otLat = best.lateral;
     this.otFollowSpeed = best.speed + 6;
+    this.otPrevSpeed = best.speed;
+    this.otAcc = 0;
     this.stats.follow++;
   }
 
