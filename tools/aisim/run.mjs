@@ -80,7 +80,7 @@ async function raceBlock(trackId) {
   const out = [];
   for (const diff of diffs) {
     let lapAll = [];
-    let totals = { wall: 0, hard: 0, wreck: 0, wreckWall: 0, wreckTd: 0, stuck: 0, reverse: 0, td: 0, tdI: 0, tdS: 0, tdA: 0, tdP: 0, attack: 0, follow: 0, swing: 0, shock: 0, lapse: 0, recover: 0, bump: 0, slip: 0, slipT: 0, def: 0, ovt: 0, fin: 0, tot: 0, us: [], plPlace: [] };
+    let totals = { wall: 0, hard: 0, wreck: 0, wreckWall: 0, wreckTd: 0, stuck: 0, reverse: 0, td: 0, tdI: 0, tdS: 0, tdA: 0, tdP: 0, attack: 0, follow: 0, swing: 0, shock: 0, lapse: 0, recover: 0, ot: {}, bump: 0, slip: 0, slipT: 0, def: 0, ovt: 0, fin: 0, tot: 0, us: [], plPlace: [] };
     for (let r = 0; r < reps; r++) {
       const res = await runRace({ track: trackId, trackOpts, laps, difficulty: diff, bots, models, player: opt.player, maxTime: Number(opt.maxTime) });
       const bs = res.entries.filter((e) => e.bot);
@@ -97,6 +97,7 @@ async function raceBlock(trackId) {
       totals.tdS += sumStat(bs, 'tdShock');
       totals.tdA += sumStat(bs, 'tdAccident');
       totals.tdP += sumStat(bs, 'tdOnPlayer');
+      for (const e of bs) for (const k of Object.keys(e.stats)) if (k.startsWith('ot_')) totals.ot[k] = (totals.ot[k] || 0) + e.stats[k];
       for (const k of ['attack', 'follow', 'swing', 'shock', 'lapse', 'recover']) totals[k] += bs.reduce((a, e) => a + (e.stats[k] || 0), 0);
       totals.bump += sumStat(bs, 'bumps');
       totals.slip += sumStat(res.entries, 'slipStarts');
@@ -112,7 +113,7 @@ async function raceBlock(trackId) {
     const nLaps = Math.max(1, lapAll.length);
     const t = totals;
     console.log(`${diff.padEnd(6)}  ${f2(mean(lapAll)).padStart(9)}  ${`${t.fin}/${t.tot}`.padStart(5)}  ${f1(t.wall / nLaps).padStart(9)}  ${String(t.hard).padStart(4)}  ${`${t.wreck}(${t.wreckWall}/${t.wreckTd})`.padStart(21)}  ${String(t.stuck).padStart(7)}  ${String(t.reverse).padStart(4)}  ${String(t.td).padStart(8)}  ${String(t.bump).padStart(4)}  ${String(t.slip).padStart(9)}  ${f1(t.slipT).padStart(11)}  ${String(t.def).padStart(7)}  ${String(t.ovt).padStart(7)}  ${f1(mean(t.us)).padStart(7)}  ${t.plPlace.join(',')}`);
-    console.log(`        takedown: kasıtlı ${t.tdI} shockwave ${t.tdS} kaza ${t.tdA} (oyuncuya ${t.tdP}) | saldırı ${t.attack} takip ${t.follow} sollama-başlangıç ${t.swing} shock ${t.shock} hata ${t.lapse} toparlanma ${t.recover}`);
+    console.log(`        takedown: kasıtlı ${t.tdI} shockwave ${t.tdS} kaza ${t.tdA} (oyuncuya ${t.tdP}) | saldırı ${t.attack} takip ${t.follow} sollama-başlangıç ${t.swing} shock ${t.shock} hata ${t.lapse} toparlanma ${t.recover}\n        sollama sonuçları: ${JSON.stringify(t.ot)}`);
     out.push({ diff, mean: mean(lapAll), ...t });
   }
   return out;

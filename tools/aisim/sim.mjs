@@ -175,7 +175,7 @@ export async function runRace(opts) {
         if (c.wrecked) continue;
         let ds = c.trackS - p.s;
         ds -= Math.round(ds / L) * L;
-        if (Math.abs(ds) < 4 && Math.abs(c.lateral - p.lateral) < 4.5) {
+        if (ds * ds + (c.lateral - p.lateral) ** 2 < 3.2 * 3.2) {
           c.addNitro(0.25);
           p.active = false;
           p.respawnAt = time + 12;

@@ -173,6 +173,11 @@ export class BotDriver {
     this.lapseSide = 1;
     this.lapseCheck = 0;
 
+    this.pickTarget = null;
+    this.pickSeen = null;
+    this.pickAccept = false;
+    this.pickCheck = 0;
+
     this.rampKey = null;
     this.rampLap = -1;
     this.rampTake = false;
@@ -187,6 +192,7 @@ export class BotDriver {
     this.shockPhase = 0;
     this.shockCooldown = 0;
     this.wasteT = 0;
+    this.saveT = 0;
 
 
     this.stuckT = 0;
@@ -288,6 +294,10 @@ export class BotDriver {
     else {
       const rampLat = this.updateRamp(s, lim);
       if (!Number.isNaN(rampLat)) overrideTarget = rampLat;
+      else {
+        const pickLat = this.updatePickup(dt, s, lat, vF, lim, kNear);
+        if (!Number.isNaN(pickLat)) overrideTarget = pickLat;
+      }
     }
     if (this.lapseT > 0 && this.lapseKind === 2 && Number.isNaN(overrideTarget)) {
       overrideTarget = clamp(this.baseLatAt(s + 15) + this.lapseSide * 3, -lim, lim); // geniş gitme hatası
@@ -758,12 +768,12 @@ export class BotDriver {
       const closing = vF - v.speed;
       if (v.wrecked || v.ghost || v.airborne || v.finished || car.finished || this.attackTarget || ds > 60 || ds < -25
         || vF < 18 || this.otT > 16) {
-        this.endOvertake(1.5);
+        this.endOvertake(1.5, 'invalid');
         return;
       }
       if (this.otState === OT_FOLLOW) {
         if (ds < -3 || kNear > 1 / 60) {
-          this.endOvertake(1.5);
+          this.endOvertake(1.5, ds < -3 ? 'passedByFollow' : 'cornerFollow');
           return;
         }
         this.otLat = clamp(v.lateral, -lim, lim);
@@ -771,7 +781,7 @@ export class BotDriver {
         const straight = kNear < 1 / 110;
         const swingDist = clamp(7 + closing * 0.55, 8.5, 17);
         if (straight && ((ds <= swingDist && closing > 0.8) || ds <= 8.5 || (closing > 7 && ds < 22))) this.startSwing(v, ctx, s, lat, lim, ds);
-        else if (this.otT > 9 && closing < 0.5) this.endOvertake(4); // sonuç yok: vazgeç
+        else if (this.otT > 9 && closing < 0.5) this.endOvertake(4, 'noResult'); // sonuç yok: vazgeç
         return;
       }
       // SWING: seçilen tarafa bağlı kal
@@ -786,10 +796,10 @@ export class BotDriver {
       }
       if (ds < -6.5) {
         this.stats.overtake++;
-        this.endOvertake(1.2);
+        this.endOvertake(1.2, 'done');
         return;
       }
-      if (this.otT > 8 || kNear > 1 / 45) this.endOvertake(2.5);
+      if (this.otT > 8 || kNear > 1 / 45) this.endOvertake(2.5, this.otT > 8 ? 'swingTimeout' : 'swingCorner');
       return;
     }
 
@@ -865,7 +875,8 @@ export class BotDriver {
     this.stats.swing++;
   }
 
-  endOvertake(cooldown) {
+  endOvertake(cooldown, why) {
+    if (why && this.otState !== OT_NONE) this.stats['ot_' + why] = (this.stats['ot_' + why] || 0) + 1;
     this.otState = OT_NONE;
     this.otTarget = null;
     this.otSide = 0;
@@ -1091,6 +1102,51 @@ export class BotDriver {
   }
 
   // ---------------------------------------------------------------------------------------------------
+  // Nitro pickup'ları: çizgiye yakın (en çok ~5 m yanal sapma) ve düz yoldaki aktif pickup'a yönel.
+  updatePickup(dt, s, lat, vF, lim, kNear) {
+    const pickups = this.track.pickups;
+    if (!pickups || pickups.length === 0) return NaN;
+    const P = this.profile;
+    const L = this.line.trackLength;
+    const car = this.car;
+    if (this.pickTarget) {
+      const p = this.pickTarget;
+      let ds = p.s - s;
+      ds -= Math.round(ds / L) * L;
+      if (!p.active || ds < -1.5 || ds > 130 || kNear > 1 / 70 || car.finished || car.nitro > 0.97) {
+        this.pickTarget = null;
+        return NaN;
+      }
+      return ds < 75 ? p.lateral : NaN;
+    }
+    if (P.pickup <= 0 || car.nitro > 0.9 || kNear > 1 / 110 || vF < 25 || car.finished) return NaN;
+    this.pickCheck -= dt;
+    if (this.pickCheck > 0) return NaN;
+    this.pickCheck = 0.25;
+    let best = null;
+    let bestDs = 1e9;
+    for (let i = 0; i < pickups.length; i++) {
+      const p = pickups[i];
+      if (!p || !p.active || !Number.isFinite(p.s)) continue;
+      let ds = p.s - s;
+      ds -= Math.round(ds / L) * L;
+      if (ds < 25 || ds > 110 || ds >= bestDs) continue;
+      const lim2 = Math.max(0, this.line.halfWidthAt(p.s) - TUNING.edge);
+      if (Math.abs(p.lateral) > lim2 + 0.5) continue;
+      if (Math.abs(p.lateral - this.baseLatAt(p.s)) > 5.5) continue; // çizgiden çok uzak
+      best = p;
+      bestDs = ds;
+    }
+    if (!best) return NaN;
+    if (this.pickSeen !== best) {
+      this.pickSeen = best;
+      this.pickAccept = this.rng() < P.pickup;
+    }
+    if (this.pickAccept) this.pickTarget = best;
+    return NaN;
+  }
+
+  // ---------------------------------------------------------------------------------------------------
   // Rampalar: 'jump' rampalarından bazen, 'roll' rampalarına yalnızca yetenekli botlar bazen girer.
   updateRamp(s, lim) {
     const info = this.line.nextRamp(s, 160, this.rampInfo);
@@ -1144,6 +1200,11 @@ export class BotDriver {
           chain = true;
         }
         if (P.shock > 0 && !this.attackTarget) shock = this.shockWanted(ctx, s, vF, kHere);
+        // shockwave için bar doldurmaya çalış: dolmaya yakınken normal patlamaları ertele (en çok ~35 s)
+        if (P.shock > 0 && !burstOn && car.nitro >= 0.7 && car.nitro < 0.995 && this.saveT < 35) {
+          this.saveT += dt;
+          want = false;
+        } else if (car.nitro < 0.5 || car.nitro >= 0.995) this.saveT = 0;
       } else {
         const kA = this.line.maxCurvatureAhead(s);
         const vNeed = vF + 18 - 8 * boost;
