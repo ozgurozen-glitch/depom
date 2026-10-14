@@ -3,6 +3,7 @@
 //
 // Yerel eksenler: +Z ileri, +Y yukarı, +X arabanın SOLU (sözleşmedeki right = -X).
 import * as THREE from 'three';
+import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
   smoothstep, bump, prep, merge, box, surfaceHit, surfaceStrip, rangePoints, extrudeProfile, splitCanopy,
   airfoilShape, wheelGeometry, probeMesh, BLACK, CARBON, METAL,
@@ -70,9 +71,6 @@ function bodyDeform(z, y, u, out) {
   if (z < -1.9) w *= 1 - 0.05 * ((-1.9 - z) / 0.35);
   w *= 1 - 0.07 * smoothstep(0.62, 1.0, y); // tumblehome
   w *= 1 - 0.04 * bump(z, -0.3, 0.7) * bump(y, 0.5, 0.17); // kapı oyuğu
-  // Geniş çamurluk kabarmaları (overfender): arka daha geniş.
-  const band = smoothstep(0.24, 0.46, y) * (1 - smoothstep(0.7, 0.84, y));
-  w *= 1 + 0.07 * bump(z, DIMS.frontAxleZ, 0.5) * band + 0.085 * bump(z, DIMS.rearAxleZ, 0.55) * band;
   out.w = w;
 
   // Kaput: hafif tepe (orta yüksek), ön çamurluk üstü çukur.
@@ -113,6 +111,22 @@ function rivet(hit, r, h, color) {
   return g;
 }
 
+// Perçinli geniş çamurluk (overfender): kemer çevresinde gövdeden dışarı taşan halka dilimi.
+function overfender(axleZ, sx, outer) {
+  const sh = new THREE.Shape();
+  const ro = ARCH_R + 0.085;
+  sh.absarc(axleZ, ARCH_CY, ro, -0.2, Math.PI + 0.2, false);
+  sh.absarc(axleZ, ARCH_CY, ARCH_R - 0.002, Math.PI + 0.2, -0.2, true);
+  const depth = 0.09;
+  const geo = new THREE.ExtrudeGeometry(sh, {
+    depth, steps: 1, curveSegments: 18, bevelEnabled: true, bevelThickness: 0.015, bevelSize: 0.012, bevelSegments: 2,
+  });
+  geo.translate(0, 0, -depth / 2);
+  // shape x → araba z, shape z → araba x (dışa doğru)
+  const g = prep(geo, { rot: [0, -Math.PI / 2, 0], pos: [sx > 0 ? outer - depth / 2 + 0.005 : -(outer - depth / 2) - 0.005, 0, 0] });
+  return g;
+}
+
 export function buildRaijin() {
   const D = DIMS;
   const body = extrudeProfile(bodyShape(), 0.9, {
@@ -130,13 +144,17 @@ export function buildRaijin() {
   for (const sx of [1, -1]) {
     upper.push(prep(box(0.15, 0.08, 0.12), { pos: [sx * 0.86, 0.98, 0.6], rot: [0, sx * 0.2, 0] }));
     // Kanat yan plakaları
-    upper.push(prep(box(0.03, 0.36, 0.66), { pos: [sx * 0.93, 1.5, -2.07], rot: [-0.06, 0, 0] }));
   }
   const paintUpper = merge(upper);
   const glass = canopy.glass;
   glass.computeBoundingSphere();
 
   const probe = probeMesh(body);
+  const fenders = [];
+  for (const z of [DIMS.frontAxleZ, DIMS.rearAxleZ]) {
+    for (const sx of [1, -1]) fenders.push(toCreasedNormals(overfender(z, sx, z > 0 ? 0.975 : 0.985), 0.8));
+  }
+  const paintBody = merge([body.clone(), ...fenders]);
   const FRONT = [0, 0, -1];
   const REAR = [0, 0, 1];
   const DOWN = [0, -1, 0];
@@ -165,7 +183,7 @@ export function buildRaijin() {
     trim.push(...surfaceStrip(probe, rangePoints(8, (t) => [sx * (0.26 + 0.6 * t), 0.585 + 0.07 * t, 5]), FRONT,
       { height: 0.06, depth: 0.05, lift: -0.012, color: BLACK }));
     // Yan hava çıkışı (ön çamurluk arkası)
-    trim.push(...surfaceStrip(probe, rangePoints(6, (t) => [sx * 5, 0.5 + 0.03 * t, 0.62 - 0.46 * t]), [-sx, 0, 0],
+    trim.push(...surfaceStrip(probe, rangePoints(6, (t) => [sx * 5, 0.52 + 0.03 * t, 0.8 - 0.4 * t]), [-sx, 0, 0],
       { height: 0.1, depth: 0.05, lift: -0.012, color: BLACK }));
   }
   // Ön orta ızgara: geniş siyah ağız + yatay çıtalar
@@ -185,13 +203,15 @@ export function buildRaijin() {
     const hp = surfaceHit(probe, [sx * 0.62, 5, 1.7], DOWN);
     if (hp) trim.push(prep(new THREE.CylinderGeometry(0.02, 0.02, 0.014, 8), { pos: [hp.p.x, hp.p.y + 0.006, hp.p.z], color: METAL }));
   }
-  // Çamurluk perçinleri (overfender)
+  // Çamurluk perçinleri: overfender dış yüzünde kemer çevresinde
   for (const z of [D.frontAxleZ, D.rearAxleZ]) {
+    const face = (z > 0 ? 0.975 : 0.985) + 0.02;
     for (const sx of [1, -1]) {
       for (let k = 0; k < 9; k++) {
-        const a = (25 + k * 16.5) * (Math.PI / 180);
-        const hit = surfaceHit(probe, [sx * 5, ARCH_CY + 0.54 * Math.sin(a), z + 0.54 * Math.cos(a) * (k % 2 ? 1 : 1)], [-sx, 0, 0]);
-        if (hit) trim.push(rivet(hit, 0.012, 0.022, METAL));
+        const a = (4 + k * 21) * (Math.PI / 180);
+        const r = ARCH_R + 0.045;
+        const hit = { p: new THREE.Vector3(sx * face, ARCH_CY + r * Math.sin(a), z + r * Math.cos(a)), n: new THREE.Vector3(sx, 0, 0) };
+        trim.push(rivet(hit, 0.013, 0.024, METAL));
       }
     }
   }
@@ -225,6 +245,7 @@ export function buildRaijin() {
   });
   wingProfile.translate(0, 0, -0.9);
   top.push(prep(wingProfile, { pos: [0, 1.52, -2.08], rot: [0, -Math.PI / 2, -0.12], color: CARBON }));
+  for (const sx of [1, -1]) top.push(prep(box(0.03, 0.26, 0.54), { pos: [sx * 0.92, 1.52, -2.1], rot: [-0.06, 0, 0], color: CARBON }));
   top.push(prep(box(1.7, 0.012, 0.09), { pos: [0, 1.6, -2.28], rot: [0.5, 0, 0], color: CARBON })); // gurney
   for (const sx of [1, -1]) {
     top.push(prep(box(0.045, 0.52, 0.14), { pos: [sx * 0.4, 1.26, -2.06], rot: [-0.18, 0, 0], color: CARBON }));
@@ -258,5 +279,5 @@ export function buildRaijin() {
   const wheelR = wheelGeometry([{ side: -1, x: 0 }], WHEEL);
   const rearAxle = wheelGeometry([{ side: 1, x: D.rearTrack }, { side: -1, x: -D.rearTrack }], WHEEL);
 
-  return { paintBody: body, paintUpper, glass, trim: trimGeo, trimTop, head: headGeo, tail: tailGeo, wheelL, wheelR, rearAxle };
+  return { paintBody, paintUpper, glass, trim: trimGeo, trimTop, head: headGeo, tail: tailGeo, wheelL, wheelR, rearAxle };
 }

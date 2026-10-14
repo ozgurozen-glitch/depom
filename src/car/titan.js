@@ -24,7 +24,7 @@ export const DIMS = Object.freeze({
 });
 
 // Kamera bağlantı noktaları (araç yerel koordinatı).
-export const ANCHORS = { hood: [0, 1.12, 0.78], bumper: [0, 0.5, 2.6] };
+export const ANCHORS = { hood: [0, 1.3, 0.62], bumper: [0, 0.5, 2.6] };
 
 export const WHEEL = {
   R: 0.385, halfW: 0.18, rimR: 0.27, hub: 0.07, disc: 0.23,
@@ -69,12 +69,6 @@ function bodyDeform(z, y, u, out) {
   }
   if (z < -2.1) w *= 1 - 0.05 * ((-2.1 - z) / 0.4);
   w *= 1 - 0.06 * smoothstep(0.78, 1.14, y); // tumblehome
-  // Omuz çizgisi: hafif bombe + belirgin kalça.
-  w *= 1 + 0.018 * bump(y, 0.8, 0.07);
-  w *= 1 + 0.03 * bump(z, DIMS.rearAxleZ, 0.7) * smoothstep(0.3, 0.55, y) * (1 - smoothstep(0.85, 1.05, y));
-  w *= 1 + 0.015 * bump(z, DIMS.frontAxleZ, 0.55) * smoothstep(0.3, 0.55, y) * (1 - smoothstep(0.85, 1.05, y));
-  // Kapılarda yan oyuk
-  w *= 1 - 0.04 * bump(z, -0.2, 0.9) * bump(y, 0.62, 0.16);
   out.w = w;
 
   // Kaput kabartması (power dome): ortada yükselen, uca doğru sönen şişkinlik.
@@ -150,8 +144,8 @@ export function buildTitan() {
     trim.push(...surfaceStrip(probe, rangePoints(5, (t) => [sx * (0.62 + 0.32 * t), 0.31, 5]), FRONT,
       { height: 0.14, depth: 0.05, lift: -0.012, color: BLACK }));
     // Far yuvası (kalın siyah çerçeve)
-    trim.push(...surfaceStrip(probe, rangePoints(6, (t) => [sx * (0.82 + 0.15 * t), 0.7, 5]), FRONT,
-      { height: 0.12, depth: 0.05, lift: -0.014, color: BLACK }));
+    trim.push(...surfaceStrip(probe, rangePoints(7, (t) => [sx * (0.46 + 0.5 * t), 0.69, 5]), FRONT,
+      { height: 0.14, depth: 0.05, lift: -0.014, color: BLACK }));
     // Yan: ön çamurluk arkası hava çıkışı
     trim.push(...surfaceStrip(probe, rangePoints(6, (t) => [sx * 5, 0.56 + 0.04 * t, 0.9 - 0.5 * t]), [-sx, 0, 0],
       { height: 0.07, depth: 0.05, lift: -0.012, color: BLACK }));
@@ -174,8 +168,8 @@ export function buildTitan() {
     trim.push(...surfaceStrip(probe, deck, DOWN, { height: 0.11, depth: 0.02, lift: 0.0, color: BLACK }));
   }
   // Arka panel, siyah bant, difüzör
-  trim.push(...surfaceStrip(probe, rangePoints(10, (t) => [-0.95 + 1.9 * t, 0.62, -5]), REAR,
-    { height: 0.24, depth: 0.05, lift: -0.012, color: BLACK }));
+  trim.push(...surfaceStrip(probe, rangePoints(10, (t) => [-0.7 + 1.4 * t, 0.55, -5]), REAR,
+    { height: 0.2, depth: 0.05, lift: -0.012, color: BLACK }));
   trim.push(...surfaceStrip(probe, rangePoints(12, (t) => [-0.96 + 1.92 * t, 0.9, -5]), REAR,
     { height: 0.2, depth: 0.05, lift: -0.012, color: BLACK }));
   trim.push(prep(box(1.6, 0.04, 0.4), { pos: [0, 0.3, -2.4], rot: [-0.25, 0, 0], color: CARBON }));
@@ -198,11 +192,9 @@ export function buildTitan() {
   // --- Farlar: iki kalın LED bloğu + halka gündüz ışığı ---
   const head = [];
   for (const sx of [1, -1]) {
-    head.push(...surfaceStrip(probe, rangePoints(5, (t) => [sx * (0.84 + 0.12 * t), 0.7, 5]), FRONT,
-      { height: 0.06, depth: 0.03, lift: 0.004 }));
-    head.push(...surfaceStrip(probe, rangePoints(4, (t) => [sx * (0.86 + 0.1 * t), 0.63, 5]), FRONT,
-      { height: 0.035, depth: 0.03, lift: 0.004 }));
-    head.push(...surfaceStrip(probe, rangePoints(3, (t) => [sx * 0.97, 0.52 + 0.17 * t, 5]), FRONT,
+    head.push(...surfaceStrip(probe, rangePoints(5, (t) => [sx * (0.5 + 0.42 * t), 0.715 + 0.01 * t, 5]), FRONT,
+      { height: 0.055, depth: 0.03, lift: 0.004 }));
+    head.push(...surfaceStrip(probe, rangePoints(5, (t) => [sx * (0.5 + 0.42 * t), 0.64 + 0.01 * t, 5]), FRONT,
       { height: 0.03, depth: 0.03, lift: 0.004 }));
   }
   const headGeo = merge(head);
