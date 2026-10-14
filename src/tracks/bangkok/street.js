@@ -6,6 +6,9 @@ import {
   colorize, clean, lampPoleGeometry, lampBulbGeometry,
 } from '../../track/models.js';
 import { GROUND_Y } from './context.js';
+import { RIVER } from './layout.js';
+
+const RS = RIVER.side || -1; // nehir kıyı yolunun hangi yanında
 import {
   sidewalkTexture, streakTexture, awningTexture, softGlowTexture,
 } from './textures.js';
@@ -100,7 +103,7 @@ export function buildStreet(ctx) {
     for (let s = 0; s <= L; s += 4) {
       ctx.frame(s, f);
       if (elevated(s)) { prev = null; continue; }
-      const river = inSec(s, 'river') && side < 0;
+      const river = inSec(s, 'river') && side === RS;
       const out = river ? 15.5 : 17;
       const y = f.y + 0.14;
       const lats = [side * (W2 + 0.62), side * out, side * out];
@@ -153,7 +156,7 @@ export function buildStreet(ctx) {
     if (id === 'sukhumvit') continue; // BTS viyadüğünün altı: alt ışık şeritleri aydınlatır
     if (elevated(s)) continue; // otoyolda ayrı (aşağıda)
     const side = Math.round(s / 34) % 2 === 0 ? 1 : -1;
-    if (id === 'river' && side < 0) { addLamp(s, -1, 13.2); continue; }
+    if (id === 'river' && side === RS) { addLamp(s, RS, 13.2); continue; }
     addLamp(s, side);
   }
   for (const sp of ctx.expresswayLamps || []) addLamp(sp.s, sp.side, 11.8);
@@ -212,7 +215,8 @@ export function buildStreet(ctx) {
     if (rnd() < 0.35) ctx.streaks.push({ s, lateral: side * 8.6, len: 12, width: 1.1, color: new THREE.Color(warm ? 0.6 : 0.4, warm ? 0.38 : 0.55, warm ? 0.18 : 0.5) });
   };
   for (let s = sec.chinatown.s0 + 8; s < sec.sukhumvit.s0 - 20; s += rr(7, 12)) addStall(s, rnd() < 0.5 ? -1 : 1, rr(13.2, 14.6));
-  for (let s = sec.silom.s0 + 30; s < sec.expressway.s0 + 40; s += rr(16, 30)) addStall(s, rnd() < 0.5 ? -1 : 1, rr(13.5, 15));
+  for (let s = sec.silom.s0 + 30; s < sec.lumpini.s0; s += rr(16, 30)) addStall(s, rnd() < 0.5 ? -1 : 1, rr(13.5, 15));
+  for (let s = sec.khaosan.s0 + 130; s < sec.chinatown.s0 - 10; s += rr(8, 14)) addStall(s, rnd() < 0.5 ? -1 : 1, rr(13.2, 14.6));
   for (let s = sec.sukhumvit.s0 + 40; s < L + sec.silom.s0 - 30; s += rr(30, 50)) {
     if (Math.abs(track.wrap(s) - 0) < 20) continue;
     addStall(s, rnd() < 0.5 ? -1 : 1, rr(14, 15.5));
@@ -251,32 +255,55 @@ export function buildStreet(ctx) {
   awnMesh.name = 'market-awnings';
   group.add(awnMesh);
 
-  // ---------------- Fener dizileri (yolun üstünden, Chinatown)
+  // ---------------- Fener dizileri (yolun üstünden): Chinatown'da kırmızı fenerler, Khao San'da renkli ampuller
   const lanterns = [];
+  const bulbsOver = [];
   const wirePos = [];
-  for (let s = sec.chinatown.s0 + 10; s < sec.sukhumvit.s0 - 20; s += 13) {
-    ctx.frame(s, f);
-    const y0 = f.y + 9.6;
-    const N = 18;
-    let prev = null;
-    for (let k = 0; k <= N; k++) {
-      const t = k / N;
-      const lat = -16.4 + 32.8 * t;
-      const sag = 1.5 * 4 * t * (1 - t);
-      const p = [f.x + f.rx * lat, y0 - sag, f.z + f.rz * lat];
-      if (prev) wirePos.push(...prev, ...p);
-      prev = p;
-      if (k % 2 === 1) {
-        lanterns.push({ x: p[0], y: p[1] - 0.75, z: p[2], yaw: f.yaw, scale: rr(0.9, 1.1) });
-        if (k % 4 === 1) ctx.glows.push({ x: p[0], y: p[1] - 0.75, z: p[2], color: new THREE.Color(0.28, 0.04, 0.015) });
+  const festoon = [new THREE.Color(2.2, 1.3, 0.4), new THREE.Color(0.4, 1.6, 2.2), new THREE.Color(2.2, 0.3, 1.5), new THREE.Color(0.6, 2.0, 0.5)];
+  const strings = [
+    { s0: sec.chinatown.s0 + 10, s1: sec.sukhumvit.s0 - 20, step: 13, kind: 'lantern' },
+    { s0: sec.khaosan.s0 + 120, s1: sec.chinatown.s0 - 8, step: 11, kind: 'festoon' },
+  ];
+  for (const st of strings) {
+    for (let s = st.s0; s < st.s1; s += st.step) {
+      ctx.frame(s, f);
+      if (elevated(s)) continue;
+      const y0 = f.y + 9.6;
+      const N = 18;
+      let prev = null;
+      for (let k = 0; k <= N; k++) {
+        const t = k / N;
+        const lat = -16.4 + 32.8 * t;
+        const sag = 1.5 * 4 * t * (1 - t);
+        const p = [f.x + f.rx * lat, y0 - sag, f.z + f.rz * lat];
+        if (prev) wirePos.push(...prev, ...p);
+        prev = p;
+        if (st.kind === 'lantern' && k % 2 === 1) {
+          lanterns.push({ x: p[0], y: p[1] - 0.75, z: p[2], yaw: f.yaw, scale: rr(0.9, 1.1), color: new THREE.Color(1.5, 0.09, 0.035) });
+          if (k % 4 === 1) ctx.glows.push({ x: p[0], y: p[1] - 0.75, z: p[2], color: new THREE.Color(0.28, 0.04, 0.015) });
+        } else if (st.kind === 'festoon' && k > 0 && k < N) {
+          const c = festoon[(k + Math.round(s)) % festoon.length];
+          bulbsOver.push({ x: p[0], y: p[1] - 0.2, z: p[2], yaw: 0, scale: 0.42, color: c });
+          if (k % 3 === 0) ctx.glows.push({ x: p[0], y: p[1] - 0.2, z: p[2], color: c.clone().multiplyScalar(0.07) });
+        }
+      }
+      // Yansıma: dizinin altında renkli parıltı
+      if (rnd() < 0.5) {
+        const c = st.kind === 'lantern' ? new THREE.Color(0.45, 0.05, 0.03) : festoon[Math.floor(rnd() * festoon.length)].clone().multiplyScalar(0.2);
+        ctx.streaks.push({ s, lateral: rr(-4, 4), len: 16, width: 3.2, color: c });
       }
     }
-    // Yansıma: fener dizisinin altında kırmızı parıltı
-    if (rnd() < 0.5) ctx.streaks.push({ s, lateral: rr(-4, 4), len: 16, width: 3.2, color: new THREE.Color(0.45, 0.05, 0.03) });
+    // Gerçek ışık noktaları
+    for (let s = st.s0 + 20; s < st.s1; s += 45) {
+      ctx.frame(s, f);
+      const col = st.kind === 'lantern' ? 0xff5a30 : [0xffb040, 0x40c0ff, 0xff40c0][Math.floor(rnd() * 3)];
+      const spot = ctx.addLightSpot(f.x, f.y + 7.5, f.z, col, 0.6);
+      if (spot) spot.fromLamp = true;
+    }
   }
   const lanternGeo = new THREE.SphereGeometry(0.32, 10, 8);
   lanternGeo.scale(1, 1.25, 1);
-  const lanternMesh = makeInstanced(lanternGeo, new THREE.MeshBasicMaterial({ color: new THREE.Color(1.5, 0.09, 0.035) }), lanterns, placeYaw);
+  const lanternMesh = makeInstanced(lanternGeo, new THREE.MeshBasicMaterial({ color: 0xffffff }), [...lanterns, ...bulbsOver], placeYaw);
   lanternMesh.name = 'lanterns';
   group.add(lanternMesh);
   if (wirePos.length) {
@@ -286,12 +313,6 @@ export function buildStreet(ctx) {
     wires.name = 'lantern-wires';
     group.add(wires);
   }
-  // Fener bölgesinde gerçek ışık noktaları (kırmızı)
-  for (let s = sec.chinatown.s0 + 30; s < sec.sukhumvit.s0 - 20; s += 45) {
-    ctx.frame(s, f);
-    const spot = ctx.addLightSpot(f.x, f.y + 7.5, f.z, 0xff5a30, 0.6);
-    if (spot) spot.fromLamp = true;
-  }
 
   // ---------------- Nehir kıyısı korkuluğu (sol yan, kaldırımın dış kenarı)
   const railParts = [];
@@ -300,7 +321,7 @@ export function buildStreet(ctx) {
     let s = sec.river.s0 + 10;
     while (s < sec.river.s1 - 10) {
       ctx.frame(s, f);
-      const lat = -15.2;
+      const lat = RS * 15.2;
       const x = f.x + f.rx * lat;
       const z = f.z + f.rz * lat;
       const post = colorize(new THREE.BoxGeometry(0.25, 1.1, 0.25), 0xd8d4c8);
@@ -318,7 +339,8 @@ export function buildStreet(ctx) {
     for (let s2 = sec.river.s0 + 10; s2 < sec.river.s1 - 10; s2 += 6) {
       ctx.frame(s2, f);
       const base = pos.length / 3;
-      for (const [lat, dy] of [[-15.05, 1.12], [-15.35, 1.12], [-15.35, 0.98], [-15.05, 0.98]]) {
+      for (const [lat0, dy] of [[15.05, 1.12], [15.35, 1.12], [15.35, 0.98], [15.05, 0.98]]) {
+        const lat = RS * lat0;
         pos.push(f.x + f.rx * lat, f.y + 0.14 + dy, f.z + f.rz * lat);
       }
       if (base > 0) {

@@ -160,13 +160,14 @@ export function buildBts(ctx) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Otoyol tabliyesi: yol yerden yüksekte olduğu yerde kutu kiriş + yan cephe LED şeridi + ayaklar
+// Yükseltilmiş yol tabliyesi (otoyol ve köprüler): yol yerden yüksekte olduğu her yerde kutu kiriş + yan cephe
+// LED şeridi + ayaklar (kablolu köprünün su üstündeki açıklığında ayak yok, alçak köprüde ayaklar sudan çıkar)
 
 export function buildExpressway(ctx) {
   const { track, group } = ctx;
   const W = 12.6; // tabliye yarı genişliği (bariyer dışı + lamba direkleri)
   const ds = 4;
-  const sec = ctx.sec.expressway;
+  const L = track.length;
   const pos = [];
   const idx = [];
   const ledPos = [];
@@ -176,7 +177,7 @@ export function buildExpressway(ctx) {
   let prevLed = null;
   const pierParts = [];
   const lampSpots = [];
-  for (let s = sec.s0; s <= sec.s1 + 60; s += ds) {
+  for (let s = 0; s <= L; s += ds) {
     ctx.frame(s, f);
     const y = f.y;
     if (y < GROUND_Y + 1.6) { prevRow = null; prevLed = null; continue; }
@@ -224,12 +225,15 @@ export function buildExpressway(ctx) {
     prevLed = led;
     // Ayaklar (her 32 m) — yol yerden yeterince yüksekse
     const sMod = Math.round(s) % 32;
-    if (sMod < ds && y - GROUND_Y > 4) {
-      const h = bottom - GROUND_Y;
+    const wet = ctx.isWater(f.x, f.z, 4);
+    const base = wet ? RIVER.waterY - 1 : GROUND_Y;
+    const cableSpan = wet && track.sectionAt(s) === 'bridge';
+    if (sMod < ds && y - base > 4 && !cableSpan) {
+      const h = bottom - base;
       const col = colorize(new THREE.BoxGeometry(3.2, h, 2.4), 0x86847f);
       const yaw = Math.atan2(f.tx, f.tz);
       col.rotateY(yaw);
-      col.translate(f.x, GROUND_Y + h / 2, f.z);
+      col.translate(f.x, base + h / 2, f.z);
       pierParts.push(clean(col));
       const cap = colorize(new THREE.BoxGeometry(17, 1.2, 3.0), 0x7e7c78);
       cap.rotateY(yaw + Math.PI / 2);
@@ -318,7 +322,8 @@ function bakeFloodlight(geo, baseCol, topCol, H, y0) {
 export function buildTemple(ctx) {
   const { group } = ctx;
   const z = 120;
-  const x = ctx.bankX(z) - RIVER.width - 72;
+  // Batı yaka kıyı yolunun kara tarafında (yolun solunda), yoldan ~150 m içeride
+  const x = RIVER.side > 0 ? ctx.bankX(z) - RIVER.width - RIVER.bankOffset - 150 : ctx.bankX(z) - RIVER.width - 72;
   ctx.temple = { x, z };
   ctx.reserve(x, z, 120);
   const gold = new THREE.Color(0.72, 0.4, 0.12);
@@ -438,4 +443,85 @@ export function buildGantry(ctx) {
   group.add(stripMesh);
   ctx.addLightSpot(f.x, f.y + 9, f.z, 0xff60d0, 0.8);
   void track;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Kablolu köprü (Rama VIII'i andıran): batı yakaya yakın ters-Y pilon, yelpaze biçiminde sarı ışıklı kablolar
+
+function beam(a, b, w, d, color) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  const g = colorize(new THREE.BoxGeometry(w, len, d), color);
+  g.translate(0, len / 2, 0);
+  const q = new THREE.Quaternion().setFromUnitVectors(Y, dir.normalize());
+  g.applyQuaternion(q);
+  g.translate(a.x, a.y, a.z);
+  return clean(g);
+}
+
+export function buildCableBridge(ctx) {
+  const { track, group } = ctx;
+  const sec = ctx.sec.bridge;
+  if (!sec) return;
+  // Su üstündeki açıklık: köprü bölümünde suyun bittiği s'ler
+  let w0 = null;
+  let w1 = null;
+  const f = {};
+  for (let s = sec.s0; s < sec.s1; s += 4) {
+    ctx.frame(s, f);
+    if (ctx.isWater(f.x, f.z)) {
+      if (w0 === null) w0 = s;
+      w1 = s;
+    }
+  }
+  if (w0 === null) return;
+  const sP = w0 + (w1 - w0) * 0.68; // pilon batı yakaya yakın
+  ctx.frame(sP, f);
+  const deckY = f.y;
+  const right = new THREE.Vector3(f.rx, 0, f.rz);
+  const base = new THREE.Vector3(f.x, RIVER.waterY - 1, f.z);
+  const joint = base.clone().setY(deckY + 52);
+  const top = base.clone().setY(deckY + 118);
+  const parts = [];
+  const legCol = 0xd8d4c8;
+  for (const side of [-1, 1]) {
+    const foot = base.clone().addScaledVector(right, side * 15.5);
+    parts.push(beam(foot, joint, 3.2, 3.2, legCol));
+  }
+  parts.push(beam(joint, top, 3.6, 4.2, legCol));
+  // Tabliye altında kiriş (bacakları bağlar)
+  const cb0 = base.clone().addScaledVector(right, -15.5).setY(deckY - 2.8);
+  const cb1 = base.clone().addScaledVector(right, 15.5).setY(deckY - 2.8);
+  parts.push(beam(cb0, cb1, 2.4, 3.0, legCol));
+  const pylon = new THREE.Mesh(mergeGeometries(parts, false), new THREE.MeshLambertMaterial({ vertexColors: true, emissive: 0x3a3020 }));
+  pylon.castShadow = true;
+  pylon.name = 'cable-bridge-pylon';
+  group.add(pylon);
+  // Kablolar: pilonun üst kısmından tabliye kenarlarına (iki yönde 12'şer)
+  const cab = [];
+  const smp = {};
+  for (const dir of [-1, 1]) {
+    for (let k = 1; k <= 12; k++) {
+      const ds = dir * k * 14;
+      ctx.frame(sP + ds, smp);
+      const anchorY = deckY + 60 + k * 4.6;
+      const a = top.clone().setY(Math.min(top.y - 2, anchorY));
+      for (const side of [-1, 1]) {
+        const lat = side * 11.4;
+        cab.push(a.x, a.y, a.z, smp.x + smp.rx * lat, smp.y + 0.8, smp.z + smp.rz * lat);
+      }
+    }
+  }
+  const cg = new THREE.BufferGeometry();
+  cg.setAttribute('position', new THREE.Float32BufferAttribute(cab, 3));
+  const cables = new THREE.LineSegments(cg, new THREE.LineBasicMaterial({ color: new THREE.Color(2.2, 1.7, 0.5) }));
+  cables.name = 'cable-bridge-cables';
+  group.add(cables);
+  // Pilon tepesinde ışık
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(1.4, 10, 8), new THREE.MeshBasicMaterial({ color: new THREE.Color(5, 0.4, 0.2) }));
+  lamp.position.copy(top).setY(top.y + 1.5);
+  lamp.name = 'cable-bridge-beacon';
+  group.add(lamp);
+  ctx.addLightSpot(f.x, deckY + 12, f.z, 0xffd070, 0.8);
+  ctx.glows.push({ x: joint.x, y: joint.y, z: joint.z, color: new THREE.Color(0.5, 0.4, 0.15) });
 }

@@ -30,8 +30,8 @@ export class BangkokTrack extends Track {
   /** Bariyer atlas satırı: 0 şehir, 1 otoyol, 2 nehir, 3 Chinatown. */
   barrierRow(s) {
     const id = this.sectionAt(s);
-    if (id === 'expressway') return 1;
-    if (id === 'river') return 2;
+    if (id === 'expressway' || id === 'bridge') return 1;
+    if (id === 'river' || id === 'lumpini') return 2;
     if (id === 'chinatown') return 3;
     return 0;
   }

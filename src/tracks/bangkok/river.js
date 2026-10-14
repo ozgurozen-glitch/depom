@@ -217,7 +217,7 @@ export function buildRiver(ctx) {
     }
     sIdx.push(base, base + 1, base + 2, base + 1, base + 3, base + 2);
   };
-  if (ctx.temple) {
+  if (ctx.temple && ctx.isWater(ctx.temple.x + 80, ctx.temple.z)) {
     addWaterStreak(ctx.temple.x + 72, ctx.temple.z, 250, 40, new THREE.Color(0.22, 0.12, 0.04));
     addWaterStreak(ctx.temple.x + 72, ctx.temple.z, 200, 10, new THREE.Color(0.4, 0.24, 0.08));
   }
@@ -297,11 +297,26 @@ export function buildRiver(ctx) {
   const f = {};
   for (let s = ctx.sec.river.s0 + 20; s < ctx.sec.river.s1 - 20; s += 26) {
     ctx.frame(s, f);
-    const l = 18.5 + rnd() * 2;
+    const l = -(RIVER.side || -1) * (18.5 + rnd() * 2); // kara tarafı
     const x = f.x + f.rx * l;
     const z = f.z + f.rz * l;
     if (ctx.overlaps(x, z, 1)) continue;
     palms.push({ x, z, s: rr(0.9, 1.25), yaw: rnd() * 6.28 });
+  }
+  // Lumpini parkı: kıvrımların iki yanında sık ağaçlar (alan city.js'te bina için kapatıldı)
+  if (ctx.sec.lumpini) {
+    for (let s = ctx.sec.lumpini.s0 + 25; s < ctx.sec.expressway.s0 + 40; s += 9) {
+      ctx.frame(s, f);
+      for (const side of [-1, 1]) {
+        for (let k = 0; k < 3; k++) {
+          const l = side * rr(19, 140);
+          const x = f.x + f.rx * l + rr(-4, 4);
+          const z = f.z + f.rz * l + rr(-4, 4);
+          if (ctx.dist(x, z) < 17 || rnd() > 0.7 * ctx.density + 0.15) continue;
+          palms.push({ x, z, s: rr(0.8, 1.4), yaw: rnd() * 6.28 });
+        }
+      }
+    }
   }
   for (let k = 0; k < 90 * ctx.density; k++) {
     const z = rr(-900, 1200);

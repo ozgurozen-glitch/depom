@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GROUND_Y } from './context.js';
+import { RIVER } from './layout.js';
 import { signsTexture, SIGNS, towerWindowTextures } from './textures.js';
 import { colorize, clean } from '../../track/models.js';
 
@@ -225,9 +226,19 @@ export function buildCity(ctx) {
       signs: { hSign: 0.7, vSign: 0.35, signY: [5, 9] }, gap: 3,
     });
   }
+  // Lumpini parkı: kıvrımların iki yanı ağaçlık (bina yok) — ağaçlar river.js'te
+  {
+    const f = {};
+    for (let s = sec.lumpini.s0 + 30; s < sec.expressway.s0 + 40; s += 20) {
+      ctx.frame(s, f);
+      for (const side of [-1, 1]) {
+        for (const l of [45, 95, 150]) ctx.reserve(f.x + f.rx * side * l, f.z + f.rz * side * l, l < 60 ? 32 : 50);
+      }
+    }
+  }
   // Silom: dükkânlı evler + orta yükseklikte bloklar, yoğun tabela
   for (const side of [-1, 1]) {
-    rowAlong(sec.silom.s0 + 10, sec.expressway.s0 + 60, side, {
+    rowAlong(sec.silom.s0 + 10, sec.lumpini.s0 + 20, side, {
       setback: 19.5, w: [9, 16], d: [12, 18], height: tall(0.25, 30, 75, 11, 20),
       style: (h) => (h < 22 ? STYLE.SHOP : towerStyle(h)), signs: { hSign: 0.6, vSign: 0.6, signY: [4.5, 8] }, gap: 1.2,
       lit: () => rr(0.25, 0.5),
@@ -235,16 +246,23 @@ export function buildCity(ctx) {
   }
   // Otoyol: iki yanda yüksek bloklar (yükseltilmiş yol kulelerin arasından geçer)
   for (const side of [-1, 1]) {
-    rowAlong(sec.expressway.s0 + 120, sec.river.s0 - 40, side, {
+    rowAlong(sec.expressway.s0 + 120, sec.bridge.s0 - 30, side, {
       setback: 30, w: [20, 34], d: [18, 28], height: tall(0.4, 60, 150, 18, 50), style: towerStyle, gap: 14, skip: 0.35,
       signs: { hSign: 0.25, vSign: 0, signY: [16, 26] },
     });
   }
-  // Nehir kıyısı: kara tarafında oteller/kuleler
-  rowAlong(sec.river.s0 + 40, sec.chinatown.s0 - 30, 1, {
-    setback: 24, w: [22, 36], d: [18, 30], height: tall(0.5, 70, 170, 25, 60), style: towerStyle, gap: 9,
+  // Nehir kıyısı (batı yaka): kara tarafında oteller ve alçak yapılar (tapınak çevresi rezervli)
+  rowAlong(sec.river.s0 + 40, sec.khaosan.s0 - 30, -RIVER.side, {
+    setback: 24, w: [22, 36], d: [18, 30], height: tall(0.35, 60, 140, 14, 40), style: towerStyle, gap: 12,
     signs: { hSign: 0.3, vSign: 0.2, signY: [6, 10] },
   });
+  // Khao San: dar zikzak sokaklar, sıkışık dükkânlar, yoğun neon
+  for (const side of [-1, 1]) {
+    rowAlong(sec.khaosan.s0 + 120, sec.chinatown.s0 - 4, side, {
+      setback: 16.6, jitter: 0.4, w: [6, 11], d: [12, 16], height: () => rr(10, 22), style: () => (rnd() < 0.75 ? STYLE.SHOP : STYLE.CONDO),
+      signs: { hSign: 0.75, vSign: 0.7, signY: [4.2, 7] }, gap: 0.5, minClear: 16, lit: () => rr(0.4, 0.7),
+    });
+  }
   // Chinatown: dar sokak, 3-6 katlı dükkânlar, dikey kırmızı tabelalar
   for (const side of [-1, 1]) {
     rowAlong(sec.chinatown.s0 + 6, sec.sukhumvit.s0 - 30, side, {
@@ -272,12 +290,12 @@ export function buildCity(ctx) {
     }
   };
   const dens = ctx.density;
-  fill(-600, 1000, -700, 900, 34, {
+  fill(-780, 1050, -760, 900, 34, {
     minClear: 24, w: [16, 30], d: [16, 30], skip: 0.1 + (1 - dens) * 0.4,
     height: () => (rnd() < 0.18 ? rr(70, 170) : rr(14, 50)), style: (h) => (h < 24 ? (rnd() < 0.6 ? STYLE.SHOP : STYLE.CONDO) : towerStyle(h)),
   });
   // Uzak halka (silüet)
-  fill(-650, 1900, -1700, 1800, 70, {
+  fill(-800, 1900, -1700, 1800, 70, {
     minClear: 24, w: [24, 44], d: [24, 44], skip: 0.35 + (1 - dens) * 0.3,
     height: () => (rnd() < 0.35 ? rr(90, 260) : rr(30, 80)), style: towerStyle,
   });
