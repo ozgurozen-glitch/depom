@@ -367,11 +367,12 @@ export class ParticlePool {
       const a = stops[s - 1];
       const b = stops[s];
       const f = b[0] > a[0] ? Math.min(1, Math.max(0, (t - a[0]) / (b[0] - a[0]))) : 1;
+      const fe = f * f * (3 - 2 * f); // yumuşatılmış ara değer: gradyan duraklarında köşe yok
       const br = this.bright[i];
-      cl[i4] = (a[1] + (b[1] - a[1]) * f) * br;
-      cl[i4 + 1] = (a[2] + (b[2] - a[2]) * f) * br;
-      cl[i4 + 2] = (a[3] + (b[3] - a[3]) * f) * br;
-      cl[i4 + 3] = a[4] + (b[4] - a[4]) * f;
+      cl[i4] = (a[1] + (b[1] - a[1]) * fe) * br;
+      cl[i4 + 1] = (a[2] + (b[2] - a[2]) * fe) * br;
+      cl[i4 + 2] = (a[3] + (b[3] - a[3]) * fe) * br;
+      cl[i4 + 3] = a[4] + (b[4] - a[4]) * fe;
 
       if (k.stretch > 0) {
         st[i4] = (vel[i3] - cvx) * k.stretch;

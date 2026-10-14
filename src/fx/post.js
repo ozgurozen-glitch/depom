@@ -26,6 +26,9 @@ uniform float uFlash;
 uniform vec3 uFlashColor;
 uniform float uDesat;
 uniform vec3 uTint;
+uniform vec4 uGrade;          // x kontrast, y doygunluk, z pozlama, w (ayrılmış)
+uniform vec3 uShadowTint;     // gölgelere çarpan renk (nötr = 1)
+uniform vec3 uHighTint;       // ışıklara çarpan renk (nötr = 1)
 varying vec2 vUv;
 
 float hash(float n) { return fract(sin(n) * 43758.5453123); }
@@ -62,8 +65,12 @@ void main() {
     float id = floor(a);
     float fa = fract(a);
     float h1 = hash(id * 1.37 + 0.11);
-    float seed = floor(uTime * 6.0 + h1 * 13.0);
-    float on = step(0.72, hash(id * 3.17 + seed * 0.731));
+    // Çizgi hücresi kendi ritminde yavaşça belirir ve söner (zarf: 0 → 1 → 0), ani açılıp kapanma yok.
+    float ph = uTime * 1.6 + h1 * 13.0;
+    float cyc = floor(ph);
+    float env = sin(3.14159265 * fract(ph));
+    env *= env;
+    float on = step(0.7, hash(id * 3.17 + cyc * 0.731)) * env;
     float w = 0.04 + 0.06 * h1;
     float line = 1.0 - smoothstep(0.0, w, abs(fa - 0.5));
     float rr = dist * (1.6 + h1 * 2.2) - uTime * (2.6 + 3.5 * h1) + h1 * 7.0;
@@ -72,6 +79,14 @@ void main() {
     float mask = smoothstep(0.5, 1.05, dist);
     col += uLineColor * (line * dash * on * mask * uLines);
   }
+
+  // Pist başına renk düzeltmesi (doğrusal HDR; OutputPass ACES'ten önce). Nötr değerlerde etkisiz.
+  col *= uGrade.z;
+  float gl = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  col *= mix(uShadowTint, uHighTint, smoothstep(0.03, 1.1, gl));
+  col = vec3(0.18) * pow(max(col, vec3(1e-4)) / 0.18, vec3(uGrade.x)); // orta gri etrafında kontrast
+  gl = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  col = max(mix(vec3(gl), col, uGrade.y), vec3(0.0));
 
   // Vinyet + kenar rengi
   float vig = smoothstep(0.45, 1.2, dist);
@@ -106,6 +121,9 @@ export function createPostMaterial(samples) {
       uFlashColor: { value: new THREE.Vector3(1, 1, 1) },
       uDesat: { value: 0 },
       uTint: { value: new THREE.Vector3(1, 1, 1) },
+      uGrade: { value: new THREE.Vector4(1, 1, 1, 0) },
+      uShadowTint: { value: new THREE.Vector3(1, 1, 1) },
+      uHighTint: { value: new THREE.Vector3(1, 1, 1) },
     },
     vertexShader: VERT,
     fragmentShader: FRAG,

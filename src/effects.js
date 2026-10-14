@@ -9,6 +9,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 import {
   ParticlePool, ADD, ALPHA, ADDITIVE_KINDS, ALPHA_KINDS, createAdditiveMaterial, createAlphaMaterial, syncFog,
 } from './fx/particles.js';
@@ -18,16 +19,27 @@ import { createPostMaterial } from './fx/post.js';
 
 // Kalite seviyeleri. bloomScale = 1 → UnrealBloomPass kendi içinde yarım çözünürlükte çalışır.
 const QUALITY = [
-  { name: 'low', msaa: 0, bloomScale: 0.5, samples: 4, particles: 0.4, maxPixelRatio: 0.85 },
-  { name: 'medium', msaa: 0, bloomScale: 0.5, samples: 6, particles: 0.7, maxPixelRatio: 1.25 },
+  // fxaa: OutputPass'ten sonra (sRGB/LDR) tek geçişlik FXAA. High'da MSAA 2 yeterli, FXAA kapalı.
+  { name: 'low', msaa: 0, bloomScale: 0.5, samples: 4, particles: 0.4, maxPixelRatio: 0.85, fxaa: true },
+  { name: 'medium', msaa: 0, bloomScale: 0.5, samples: 6, particles: 0.7, maxPixelRatio: 1.25, fxaa: true },
   // MSAA 4 yarım float hedeflerde yüksek çözünürlükte ~200 MB VRAM tutup bağlam kaybına yol açabiliyor.
-  { name: 'high', msaa: 2, bloomScale: 1, samples: 8, particles: 1, maxPixelRatio: 4 },
+  { name: 'high', msaa: 2, bloomScale: 1, samples: 8, particles: 1, maxPixelRatio: 4, fxaa: false },
 ];
 const FPS_WARMUP = 2.5;     // s: shader derleme vb. ilk takılmaları ölçme
 const FPS_WINDOW = 3;       // s: ortalama penceresi
 const FPS_MIN = 40;
 
-const BLOOM = { strength: 0.6, radius: 0.5, threshold: 0.85 };
+// Bloom: eşik biraz yükseltildi ve diz (knee) genişletildi → parlama kademeli başlar; Bangkok neonu ve
+// Riviera güneşi tek renkli patlamaya dönüşmez. Pist ipucu (grade.bloomStrength/bloomThreshold) bunu ezer.
+const BLOOM = { strength: 0.55, radius: 0.55, threshold: 0.9, knee: 0.3 };
+const BLOOM_INPUT_MAX = 24; // bloom'a girecek en yüksek HDR değeri (aşırı parlak pikseller bloom'u patlatmasın)
+
+// Pist renk düzeltmesi ipucu (scene.userData.grade) için nötr değerler.
+const NEUTRAL_GRADE = {
+  contrast: 1, saturation: 1, exposure: 1,
+  shadows: [1, 1, 1], highlights: [1, 1, 1],
+  bloomStrength: BLOOM.strength, bloomThreshold: BLOOM.threshold,
+};
 
 const SANITIZE_SHADER = {
   uniforms: { tDiffuse: { value: null } },
@@ -46,7 +58,7 @@ const SANITIZE_SHADER = {
       bvec4 bad = bvec4(c.r != c.r || c.r > 65000.0, c.g != c.g || c.g > 65000.0,
         c.b != c.b || c.b > 65000.0, c.a != c.a || c.a > 65000.0);
       if (any(bad)) c = vec4(0.0, 0.0, 0.0, 1.0);
-      gl_FragColor = vec4(clamp(c.rgb, 0.0, 256.0), clamp(c.a, 0.0, 1.0));
+      gl_FragColor = vec4(clamp(c.rgb, 0.0, ${BLOOM_INPUT_MAX.toFixed(1)}), clamp(c.a, 0.0, 1.0));
     }`,
 };
 
@@ -66,6 +78,11 @@ function rnd(a, b) {
 function smoothstep(a, b, x) {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
+}
+
+function smootherstep(a, b, x) {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * t * (t * (t * 6 - 15) + 10);
 }
 
 // Üstel yaklaşım; hedef yükselirken ve düşerken farklı hız.
@@ -124,6 +141,57 @@ export class Effects {
     this.kick = 0;
     this.flash = 0;
     this.flashColor = new THREE.Vector3(1, 1, 1);
+    this.linesK = 0;
+    this.kickK = 0;
+    this.flashK = 0;
+
+    // Pist renk düzeltmesi: hedef ve yumuşatılmış (parametre değişimi akıcı olsun) değerler.
+    this.gradeTarget = { ...NEUTRAL_GRADE, shadows: [...NEUTRAL_GRADE.shadows], highlights: [...NEUTRAL_GRADE.highlights] };
+    this.gradeCur = { ...NEUTRAL_GRADE, shadows: [...NEUTRAL_GRADE.shadows], highlights: [...NEUTRAL_GRADE.highlights] };
+    this.gradeSource = undefined;
+  }
+
+  // Renk düzeltmesi: { contrast, saturation, exposure, shadows:[r,g,b], highlights:[r,g,b],
+  // bloomStrength, bloomThreshold }. Eksik alanlar nötr; null/undefined → tamamen nötr.
+  // instant: true → geçişsiz uygula (pist değişimi ilk karesi).
+  setGrade(g, instant = false) {
+    const t = this.gradeTarget;
+    const n = NEUTRAL_GRADE;
+    const num = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+    const vec3 = (v, d) => (Array.isArray(v) && v.length >= 3 && v.every(Number.isFinite) ? [v[0], v[1], v[2]] : [d[0], d[1], d[2]]);
+    const src = g || {};
+    t.contrast = num(src.contrast, n.contrast);
+    t.saturation = num(src.saturation, n.saturation);
+    t.exposure = num(src.exposure, n.exposure);
+    t.shadows = vec3(src.shadows, n.shadows);
+    t.highlights = vec3(src.highlights, n.highlights);
+    t.bloomStrength = num(src.bloomStrength, n.bloomStrength);
+    t.bloomThreshold = num(src.bloomThreshold, n.bloomThreshold);
+    if (instant) {
+      const c = this.gradeCur;
+      Object.assign(c, t, { shadows: [...t.shadows], highlights: [...t.highlights] });
+    }
+  }
+
+  updateGrade(dt) {
+    // Pistin bıraktığı ipucu (scene.userData.grade); referans değişince yeni pist demektir → anında uygula.
+    const hint = this.scene.userData ? this.scene.userData.grade : undefined;
+    if (hint !== this.gradeSource) {
+      this.gradeSource = hint;
+      this.setGrade(hint, true);
+    }
+    const k = 1 - Math.exp(-4 * dt);
+    const c = this.gradeCur;
+    const t = this.gradeTarget;
+    for (const key of ['contrast', 'saturation', 'exposure', 'bloomStrength', 'bloomThreshold']) c[key] += (t[key] - c[key]) * k;
+    for (let i = 0; i < 3; i++) {
+      c.shadows[i] += (t.shadows[i] - c.shadows[i]) * k;
+      c.highlights[i] += (t.highlights[i] - c.highlights[i]) * k;
+    }
+    const u = this.postMaterial.uniforms;
+    u.uGrade.value.set(c.contrast, c.saturation, c.exposure, 0);
+    u.uShadowTint.value.set(c.shadows[0], c.shadows[1], c.shadows[2]);
+    u.uHighTint.value.set(c.highlights[0], c.highlights[1], c.highlights[2]);
   }
 
   // ---------------------------------------------------------------- composer / kalite
@@ -137,6 +205,7 @@ export class Effects {
     this.renderPass = new RenderPass(this.scene, this.camera);
     this.bloomScale = q.bloomScale;
     this.bloomPass = new UnrealBloomPass(new THREE.Vector2(this.width, this.height), BLOOM.strength, BLOOM.radius, BLOOM.threshold);
+    this.bloomPass.materialHighPassFilter.uniforms.smoothWidth.value = BLOOM.knee;
     const baseSetSize = this.bloomPass.setSize.bind(this.bloomPass);
     this.bloomPass.setSize = (w, h) => baseSetSize(
       Math.max(4, Math.round(w * this.bloomScale)),
@@ -155,6 +224,16 @@ export class Effects {
     this.composer.addPass(this.bloomPass);
     this.composer.addPass(this.postPass);
     this.composer.addPass(this.outputPass);
+
+    // FXAA: sRGB'ye çevrilmiş görüntü üzerinde (OutputPass'ten sonra). Çözünürlük uniform'u composer
+    // boyutlandırınca (piksel oranı dahil) güncellenir.
+    this.fxaaPass = new ShaderPass(FXAAShader);
+    this.fxaaPass.setSize = (w, h) => {
+      this.fxaaPass.material.uniforms.resolution.value.set(1 / Math.max(1, w), 1 / Math.max(1, h));
+    };
+    this.fxaaForcedOff = new URLSearchParams(window.location.search).get('fxaa') === '0'; // test: karşılaştırma
+    this.fxaaPass.enabled = !!q.fxaa && !this.fxaaForcedOff;
+    this.composer.addPass(this.fxaaPass);
     this.applySize();
   }
 
@@ -185,6 +264,7 @@ export class Effects {
       }
     }
     this.bloomScale = q.bloomScale;
+    this.fxaaPass.enabled = !!q.fxaa && !this.fxaaForcedOff;
     this.postMaterial.defines.SAMPLES = q.samples;
     this.postMaterial.needsUpdate = true;
     this.applySize();
@@ -315,6 +395,8 @@ export class Effects {
         sinceMove: 0,
         wheels: [TireMarks.createTrack(), TireMarks.createTrack()],
         flameAcc: 0,
+        nitroFx: 0,
+        driftFx: 0,
         emberAcc: 0,
         smokeAcc: 0,
         wreckAcc: 0,
@@ -354,13 +436,17 @@ export class Effects {
     const d2 = p.distanceToSquared(this.camera.position);
     const lod = d2 < 70 * 70 ? 1 : d2 < 160 * 160 ? 0.5 : d2 < 320 * 320 ? 0.18 : 0;
 
-    if (car.nitroActive && !car.wrecked && lod > 0) this.emitNitro(car, st, dt, lod);
-    else { st.flameAcc = 0; st.emberAcc = 0; }
+    // Alev ve duman şiddeti hızlı ama yumuşak yükselir/söner: ani belirip kaybolma yok.
+    const nitroOn = car.nitroActive && !car.wrecked && lod > 0;
+    st.nitroFx = approach(st.nitroFx, nitroOn ? 1 : 0, 14, 7, dt);
+    if (st.nitroFx > 0.03) this.emitNitro(car, st, dt, lod, st.nitroFx);
+    else { st.flameAcc = 0; st.emberAcc = 0; st.nitroFx = 0; }
 
     const drifting = car.drifting && !car.airborne && !car.wrecked && lod > 0;
-    if (drifting) {
-      this.emitDrift(car, st, dt, lod);
-    } else {
+    st.driftFx = approach(st.driftFx, drifting ? 1 : 0, 6, 3.5, dt);
+    if (st.driftFx > 0.03) this.emitDrift(car, st, dt, lod, st.driftFx, drifting);
+    else st.driftFx = 0;
+    if (!drifting) {
       this.tireMarks.end(st.wheels[0]);
       this.tireMarks.end(st.wheels[1]);
     }
@@ -373,16 +459,16 @@ export class Effects {
     }
   }
 
-  emitNitro(car, st, dt, lod) {
+  emitNitro(car, st, dt, lod, fade) {
     const level = car.nitroLevel;
     const hot = level === 'perfect' || level === 'shockwave';
     const scale = level === 'shockwave' ? 1.3 : level === 'perfect' ? 1.15 : 1;
     const kind = hot ? ADD.FLAME_HOT : ADD.FLAME;
-    const rate = 60 * lod * this.budget * (hot ? 1.3 : 1);
+    const rate = 60 * lod * this.budget * (hot ? 1.3 : 1) * fade;
     st.flameAcc += rate * dt;
     const n = Math.min(10, Math.floor(st.flameAcc));
     st.flameAcc -= n;
-    st.emberAcc += 16 * lod * this.budget * dt;
+    st.emberAcc += 16 * lod * this.budget * fade * dt;
     const ne = Math.min(3, Math.floor(st.emberAcc));
     st.emberAcc -= ne;
 
@@ -393,7 +479,7 @@ export class Effects {
     for (let e = 0; e < exhausts.length; e++) {
       const ex = exhausts[e];
       // Sabit parlak çekirdek: her karede egzozda kısa ömürlü bir parıltı.
-      const core = this.additive.spawn(kind, ex.x, ex.y, ex.z, v.x, v.y, v.z, 0.05, 0.13 * scale, 0.18 * scale, 1.2);
+      const core = this.additive.spawn(kind, ex.x, ex.y, ex.z, v.x, v.y, v.z, 0.05, 0.13 * scale * (0.5 + 0.5 * fade), 0.18 * scale, 1.2 * fade);
       if (core >= 0) this.additive.setAge(core, 0);
       for (let k = 0; k < n; k++) {
         const tau = ((k + Math.random()) / n) * dt;
@@ -419,18 +505,18 @@ export class Effects {
     }
   }
 
-  emitDrift(car, st, dt, lod) {
+  emitDrift(car, st, dt, lod, fade, active) {
     const wheels = car.getRearWheelPositions();
     const speedK = Math.min(1, Math.max(0.25, car.speedKmh / 140));
     const v = st.vel;
 
-    if (lod >= 0.5) {
+    if (active && lod >= 0.5) {
       const intensity = 0.45 + 0.35 * speedK;
       this.tireMarks.add(st.wheels[0], wheels[0], intensity);
       if (wheels[1]) this.tireMarks.add(st.wheels[1], wheels[1], intensity);
     }
 
-    st.smokeAcc += 24 * speedK * lod * this.budget * dt;
+    st.smokeAcc += 24 * speedK * lod * this.budget * fade * fade * dt;
     const n = Math.min(6, Math.floor(st.smokeAcc));
     st.smokeAcc -= n;
     for (let w = 0; w < wheels.length; w++) {
@@ -440,7 +526,7 @@ export class Effects {
           ALPHA.SMOKE,
           p.x + rnd(-0.3, 0.3), p.y + 0.3, p.z + rnd(-0.3, 0.3),
           v.x * 0.22 + rnd(-1.6, 1.6), rnd(0.4, 1.6), v.z * 0.22 + rnd(-1.6, 1.6),
-          rnd(1.0, 1.8), rnd(0.35, 0.5), rnd(1.8, 2.8), rnd(0.9, 1.05),
+          rnd(1.0, 1.8), rnd(0.35, 0.5), rnd(1.8, 2.8), rnd(0.9, 1.05) * (0.45 + 0.55 * fade),
         );
       }
     }
@@ -747,23 +833,27 @@ export class Effects {
 
     const level = player.nitroLevel;
     const nitroTarget = player.nitroActive ? (level === 'shockwave' ? 1.35 : level === 'perfect' ? 1.15 : 1) : 0;
-    this.nitroK = approach(this.nitroK, nitroTarget, 7, 2.2, dt);
-    this.speedK = approach(this.speedK, smoothstep(130, 330, sp), 3, 3, dt);
-    this.wreckK = approach(this.wreckK, player.wrecked ? 1 : 0, 6, 1.6, dt);
+    this.nitroK = approach(this.nitroK, nitroTarget, 5, 2, dt);
+    // Hız eğrileri smootherstep (başlangıçta ve sonda sıfır türev) + yumuşatma: ani açılma/kapanma yok.
+    this.speedK = approach(this.speedK, smootherstep(120, 330, sp), 2.5, 2.5, dt);
+    this.wreckK = approach(this.wreckK, player.wrecked ? 1 : 0, 5, 1.6, dt);
     this.kick *= Math.exp(-dt * 3);
     this.flash *= Math.exp(-dt * 5.5);
+    this.kickK = approach(this.kickK, this.kick, 14, 14, dt);
+    this.flashK = approach(this.flashK, this.flash, 30, 30, dt);
 
     const calm = 1 - this.wreckK * 0.75;
     const nk = this.nitroK;
     u.uTime.value = this.time;
-    u.uBlur.value = Math.min(1.4, this.speedK * 0.28 + nk * 0.55 + this.kick * 0.55) * calm;
-    u.uAberration.value = Math.min(1.2, nk * 0.5 + this.speedK * 0.12 + this.kick * 0.5 + this.wreckK * 0.45);
-    const lines = Math.max(smoothstep(215, 300, sp) * 0.55, Math.min(1, nk) * 0.85) * (1 - this.wreckK);
-    u.uLines.value = lines;
+    u.uBlur.value = Math.min(1.3, this.speedK * 0.26 + nk * 0.5 + this.kickK * 0.5) * calm;
+    u.uAberration.value = Math.min(1.1, nk * 0.45 + this.speedK * 0.1 + this.kickK * 0.45 + this.wreckK * 0.4);
+    const linesTarget = Math.max(smootherstep(200, 310, sp) * 0.5, Math.min(1, nk) * 0.8) * (1 - this.wreckK);
+    this.linesK = approach(this.linesK, linesTarget, 2.2, 1.6, dt);
+    u.uLines.value = this.linesK;
     const lc = u.uLineColor.value;
     const lk = Math.min(1, nk);
     lc.set(0.42 - 0.17 * lk, 0.46 + 0.1 * lk, 0.52 + 0.68 * lk);
-    u.uVignette.value = 0.22 + this.speedK * 0.16 + Math.min(1, nk) * 0.12 + this.wreckK * 0.35;
+    u.uVignette.value = 0.22 + this.speedK * 0.14 + Math.min(1, nk) * 0.1 + this.wreckK * 0.35;
     u.uEdgeTint.value.set(
       0.03 * nk + 0.32 * this.wreckK,
       0.03 * nk + 0.01 * this.wreckK,
@@ -771,9 +861,11 @@ export class Effects {
     );
     u.uDesat.value = this.wreckK * 0.5;
     u.uTint.value.set(1.15, 0.82, 0.8);
-    u.uFlash.value = this.flash;
+    u.uFlash.value = this.flashK;
     u.uFlashColor.value.copy(this.flashColor);
 
-    this.bloomPass.strength = BLOOM.strength + Math.min(1, nk) * 0.15 + this.flash * 0.25;
+    this.updateGrade(dt);
+    this.bloomPass.threshold = this.gradeCur.bloomThreshold;
+    this.bloomPass.strength = this.gradeCur.bloomStrength + Math.min(1, nk) * 0.12 + this.flashK * 0.2;
   }
 }

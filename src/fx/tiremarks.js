@@ -40,16 +40,17 @@ varying vec2 vWorld;
 void main() {
   float age = uTime - vInfo.x;
   float fade = 1.0 - smoothstep(uFade * 0.35, uFade, age);
-  float edge = smoothstep(0.0, 0.22, vEdge) * smoothstep(1.0, 0.78, vEdge);
+  float edge = smoothstep(0.0, 0.5, vEdge) * smoothstep(1.0, 0.5, vEdge);
+  edge = edge * edge * (1.5 - 0.5 * edge); // yumuşak enine profil: kenarlar kademeli kaybolur
   // Hafif diş deseni: dünya konumuna bağlı ince çizgiler.
   float tread = 0.82 + 0.18 * sin(vEdge * 18.0) * sin((vWorld.x + vWorld.y) * 3.1);
   float a = vInfo.y * fade * edge * tread * (1.0 - vFog);
-  if (a < 0.01) discard;
+  if (a < 0.003) discard;
   gl_FragColor = vec4(0.012, 0.012, 0.014, a);
 }
 `;
 
-const HALF_WIDTH = 0.17;
+const HALF_WIDTH = 0.21;
 const MIN_STEP = 0.55;     // m: bu mesafeden kısa hareket yeni segment üretmez
 const MAX_JUMP = 8;        // m: daha uzun sıçrama → iz kopar (respawn/ışınlanma)
 
@@ -119,7 +120,7 @@ export class TireMarks {
 
   // Her tekerlek için iz durumu (Effects araba başına iki tane tutar).
   static createTrack() {
-    return { active: false, x: 0, y: 0, z: 0, lx: 0, ly: 0, lz: 0, rx: 0, ry: 0, rz: 0, intensity: 0 };
+    return { active: false, x: 0, y: 0, z: 0, lx: 0, ly: 0, lz: 0, rx: 0, ry: 0, rz: 0, intensity: 0, lastSeg: -1 };
   }
 
   // Tekerlek konumunu ekle; iz kopuksa yeni şerit başlatır.
@@ -174,12 +175,13 @@ export class TireMarks {
     const I = this.info;
     o = v * 2;
     const t = this.time;
-    const prevIntensity = Number.isNaN(track.lx) ? intensity * 0.3 : track.intensity;
+    const prevIntensity = Number.isNaN(track.lx) ? 0 : track.intensity; // iz sıfırdan yumuşakça belirir
     I[o] = t; I[o + 1] = prevIntensity;
     I[o + 2] = t; I[o + 3] = prevIntensity;
     I[o + 4] = t; I[o + 5] = intensity;
     I[o + 6] = t; I[o + 7] = intensity;
     this.markDirty(seg);
+    track.lastSeg = seg;
 
     track.x = p.x;
     track.y = p.y;
@@ -189,8 +191,16 @@ export class TireMarks {
     track.intensity = intensity;
   }
 
+  // İz biterken son segmentin uç kenarı sıfır yoğunluğa iner → iz aniden kesilmez, yumuşakça söner.
   end(track) {
+    if (track.active && track.lastSeg >= 0 && !Number.isNaN(track.lx)) {
+      const o = track.lastSeg * 8;
+      this.info[o + 5] = 0;
+      this.info[o + 7] = 0;
+      this.markDirty(track.lastSeg);
+    }
     track.active = false;
+    track.lastSeg = -1;
   }
 
   markDirty(seg) {
