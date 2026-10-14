@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { BotDriver } from '../../src/ai.js';
 import { CollisionSystem } from '../../src/collisions.js';
 import { makeTrack } from './tracks.mjs';
+import { getRacingLine } from '../../src/ai/racingLine.js';
 
 const DT = 1 / 60;
 const KMH = 1 / 3.6;
@@ -125,7 +126,29 @@ export async function runRace(opts) {
       if (evt.type === 'takedown') {
         evt.car.addNitro(0.35);
         const e = entries.find((x) => x.car === evt.car);
-        if (e) e.m.takedowns++;
+        if (e) {
+          e.m.takedowns++;
+          if (e.driver.attackTarget === evt.victim || e.driver.attackPhase) e.m.tdIntent = (e.m.tdIntent || 0) + 1;
+          else if (e.car.nitroLevel === 'shockwave') e.m.tdShock = (e.m.tdShock || 0) + 1;
+          else {
+            e.m.tdAccident = (e.m.tdAccident || 0) + 1;
+            const d = e.driver;
+            const vd = entries.find((x) => x.car === evt.victim);
+            (e.m.tdLog || (e.m.tdLog = [])).push({
+              t: +time.toFixed(1), s: Math.round(e.car.trackS), att: e.name, vic: vd ? vd.name : '?',
+              ot: d.otState, side: d.otSide, avoid: d.avoidActive, defend: d.defendActive, lapse: d.lapseKind,
+              vA: Math.round(e.car.speed * 3.6), vV: Math.round(evt.victim.speed * 3.6),
+              latA: +e.car.lateral.toFixed(1), latV: +evt.victim.lateral.toFixed(1),
+              ds: +(((evt.victim.trackS - e.car.trackS + L * 1.5) % L) - L / 2).toFixed(1),
+              rel: +Math.hypot(evt.victim.velocity.x - e.car.velocity.x, evt.victim.velocity.z - e.car.velocity.z).toFixed(1),
+              dYaw: +(((evt.victim.yaw - e.car.yaw + 3 * Math.PI) % (2 * Math.PI) - Math.PI) * 57.3).toFixed(0),
+              kap: +(1 / Math.max(1e-6, Math.abs(getRacingLine(track).curvatureAt(e.car.trackS)))).toFixed(0),
+              vicOt: vd ? vd.driver.otState : '', vicDef: vd ? vd.driver.defendActive : '', vicAvoid: vd ? vd.driver.avoidActive : '',
+            });
+          }
+          const v = entries.find((x) => x.car === evt.victim);
+          if (v && !v.bot) e.m.tdOnPlayer = (e.m.tdOnPlayer || 0) + 1;
+        }
       } else if (evt.type === 'near_miss') {
         evt.car.addNitro(0.05);
         const e = entries.find((x) => x.car === evt.car);

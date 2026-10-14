@@ -8,7 +8,7 @@
 // üzerinden yapılır; nesne üretilmez.
 
 const SPACING = 2; // m, örnek aralığı
-const EDGE_MARGIN = 2.6; // m, çizginin araç merkezi için kenar payı (sözleşme sınırı: genişlik/2 - 2)
+const EDGE_MARGIN = 3.0; // m, çizginin araç merkezi için kenar payı (viraj çıkışında dışa savrulma payı dahil)
 const CURV_HALF_SPAN = 3; // örnek; eğrilik ±6 m'lik üç nokta çemberinden
 const CURV_SMOOTH = 3; // örnek; eğrilik kutu filtresi yarı genişliği
 const AHEAD_WINDOW = 200; // m, ileriye bakan en büyük eğrilik penceresi

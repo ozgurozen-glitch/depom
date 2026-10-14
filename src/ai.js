@@ -3,39 +3,41 @@
 // Katmanlar (her adımda, sıcak yolda nesne üretmeden):
 //   1. Öğrenme   — arabanın direksiyon kazancı / dönüş kapasitesi / azami hız / fren gözlemi (ai/vehicleModel.js)
 //   2. Yanal plan — paylaşılan yarış çizgisi (ai/racingLine.js) + tercih edilen şerit + yetenek gürültüsü,
-//                  üzerine öncelik sırasıyla: takedown saldırısı > sollama/kaçınma > rampa hedefi
-//   3. Direksiyon — hıza bağlı ileri bakış noktasına pure-pursuit (araç yerel koordinatı, steer > 0 = sağ)
-//   4. Hız        — çizgi eğriliğinden viraj hızı v = sqrt(aLat/κ), ileriye bakan fren mesafesi taraması,
-//                  yeteneğe bağlı azami hız oranı, lastik bant (rubber banding)
-//   5. Nitro / drift / takılma kurtarma
+//                  üzerine öncelik sırasıyla: takedown saldırısı > kaçınma > slipstream/sollama > savunma > rampa
+//   3. Direksiyon — hıza ve eğriliğe bağlı ileri bakış noktasına pure-pursuit + bariyer koruması
+//   4. Hız        — çizgi eğriliğinden viraj hızı, ileriye bakan fren mesafesi taraması, aracın azami hızı,
+//                  zorluğa göre lastik bant (rubber banding) ve hata (lapse) modeli
+//   5. Nitro (perfect zinciri, shockwave) / drift / takılma kurtarma
+// Zorluk farkları ai/profile.js içindeki profillerde toplanır.
 import { getRacingLine } from './ai/racingLine.js';
 import { getVehicleModel } from './ai/vehicleModel.js';
+import { getProfile, PROFILES } from './ai/profile.js';
 
-const TUNING = {
-  edge: 2, // m: hedef yanal konum en fazla ±(genişlik/2 - edge)
+export const TUNING = {
+  edge: 2.8, // m: hedef yanal konum en fazla ±(genişlik/2 - edge)
   lookaheadBase: 7, // m
   lookaheadTime: 0.5, // s (hızla çarpılır)
-  lookaheadMin: 10,
+  lookaheadMin: 9,
   lookaheadMax: 55,
+  lookaheadCurve: 8, // ileri bakış 1/(1 + curve·|κ|) ile kısalır (sıkı virajda keskin takip)
   steerSlew: 8, // 1/s, direksiyon çıkışının en hızlı değişimi
   steerFilterTau: 0.1, // s, arabaya uygulanan direksiyonun tahmini (öğrenme için)
   latAccelBase: 24, // m/s², en düşük yetenekte viraj ivmesi
   latAccelSkill: 12, // m/s², yetenekle eklenen
-  capMarginBase: 0.78, // öğrenilen dönüş kapasitesinin kullanılan oranı
-  capMarginSkill: 0.14,
-  brakeMargin: 0.75, // öğrenilen fren yavaşlamasının planlamada kullanılan oranı
-  speedRatioMin: 0.88, // yetenek 0 → azami hızın %88'i, yetenek 1 → %100
   laneBias: 3, // m, preferredLane = ±1 düzlükte bu kadar yana kayar
+  avoidBehind: 4.5, // m, arkada kalmış ama yanımızdaki arabayı da say
+  alongside: 5, // m: bundan az önde (ya da arkada) olan araba 'yanımızda' sayılır
+  avoidLatRate: 3.2, // m/s, kaçış sırasında varsayılan yanal hız (temas zamanı tahmini için)
+  avoidLatLead: 0.5, // s, komşu arabanın yanal hızı bu süre kadar öne taşınır
   avoidRange: 25, // m, öndeki arabaya bakış mesafesi (hızla biraz artar)
-  avoidMargin: 0.9, // m, iki araç arasındaki yanal boşluk payı
-  nitroMin: 0.3, // nitro barı bunun üstündeyse kullan
-  driftMinSkill: 0.7,
-  rubberBehind: 150, // m, oyuncunun bu kadar gerisindeyse hızlan
-  rubberAhead: 250, // m, oyuncunun bu kadar önündeyse yavaşla
+  brakeGain: 3, // m/s: hız planını bu kadar aşınca tam fren (aşım / brakeGain ile orantılı)
+  brakeSlack: 0.8, // m/s: bu kadar aşıma kadar fren yok
+  wallMargin: 0.5, // m, bariyer koruması: araç yan yüzü ile bariyer arası hedef boşluk
 };
 
 const TWO_PI = Math.PI * 2;
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
+const lerp = (a, b, t) => a + (b - a) * t;
 const wrapAngle = (a) => a - TWO_PI * Math.floor((a + Math.PI) / TWO_PI);
 const smooth01 = (x) => {
   const t = clamp(x, 0, 1);
@@ -59,11 +61,17 @@ function makeRng(seed) {
 }
 
 const MAX_BANDS = 16;
+const OT_NONE = 0;
+const OT_FOLLOW = 1;
+const OT_SWING = 2;
 
 export class BotDriver {
-  constructor(car, track, { skill = 0.8, aggression = 0.5, preferredLane = 0 } = {}) {
+  constructor(car, track, { skill = 0.8, aggression = 0.5, preferredLane = 0, difficulty = 'normal' } = {}) {
     this.car = car;
     this.track = track;
+    this.difficulty = PROFILES[difficulty] ? difficulty : 'normal';
+    const P = getProfile(this.difficulty);
+    this.profile = P;
     this.skill = clamp(Number.isFinite(skill) ? skill : 0.8, 0, 1);
     this.aggression = clamp(Number.isFinite(aggression) ? aggression : 0.5, 0, 1);
     this.preferredLane = clamp(Number.isFinite(preferredLane) ? preferredLane : 0, -1, 1);
@@ -72,15 +80,17 @@ export class BotDriver {
     seedCounter++;
     this.rng = makeRng(Math.imul(seedCounter, 0x9e3779b1) ^ Math.round(this.skill * 7919));
 
-    const k = this.skill;
+    const k = lerp(this.skill, 1, P.skillPull); // zorluğa göre etkin yetenek
+    this.k = k;
     // Oyuncunun otopilotu iyi bir insan gibi gazı sonuna kadar kullanır; botlar yeteneğe göre.
-    this.speedRatio = car.isPlayer ? 1 : TUNING.speedRatioMin + (1 - TUNING.speedRatioMin) * k;
-    this.latAccel = TUNING.latAccelBase + TUNING.latAccelSkill * k;
-    this.capMargin = TUNING.capMarginBase + TUNING.capMarginSkill * k;
-    this.lineFollow = 0.55 + 0.45 * k; // düşük yetenek çizgiyi daha az keser
-    this.reaction = 0.15 + 0.3 * (1 - k); // s, fren tepki gecikmesi
-    this.wanderSigma = 0.2 + 1.3 * (1 - k); // m, yanal sapma
-    this.steerNoiseSigma = 0.005 + 0.05 * (1 - k);
+    this.speedRatio = car.isPlayer ? 1 : lerp(P.speedRatio[0], P.speedRatio[1], k);
+    this.latAccel = (TUNING.latAccelBase + TUNING.latAccelSkill * k) * P.latAccelMul;
+    this.capMargin = lerp(P.capacityUse[0], P.capacityUse[1], k);
+    this.lineFollow = lerp(P.lineFollow[0], P.lineFollow[1], k); // düşük yetenek çizgiyi daha az keser
+    this.reaction = Math.max(0.04, 0.15 + 0.3 * (1 - k) + P.brakeReaction); // s, fren tepki gecikmesi
+    this.wanderSigma = (0.2 + 1.3 * (1 - k)) * P.wanderMul; // m, yanal sapma
+    this.steerNoiseSigma = (0.005 + 0.05 * (1 - k)) * P.steerNoiseMul;
+    this.brakeMargin = P.brakeMargin;
 
     this.input = { throttle: 0, brake: 0, steer: 0, nitro: false, drift: false };
     this.tmpPoint = { x: 0, y: 0, z: 0 };
@@ -92,6 +102,9 @@ export class BotDriver {
     this.bandDs = new Float64Array(MAX_BANDS);
     this.bandCount = 0;
 
+    this.stats = {
+      attack: 0, defend: 0, follow: 0, swing: 0, overtake: 0, shock: 0, lapse: 0, recover: 0, drift: 0, slipTime: 0,
+    };
     this.racing = false;
     this.attackTarget = null;
     this.attackCooldown = 0;
@@ -110,7 +123,7 @@ export class BotDriver {
     this.prevSpeedF = 0;
     this.lastThrottle = 0;
     this.lastBrake = 0;
-    this.sinceRespawn = 0;
+    this.sinceRespawn = 99;
     this.wasWrecked = false;
 
     this.wander = 0;
@@ -123,10 +136,42 @@ export class BotDriver {
     this.avoidSide = 0;
     this.avoidHold = 0;
     this.followSpeed = Infinity;
+    this.laneMin = -1e9;
+    this.laneMax = 1e9;
+    this.squeezeSpeed = Infinity;
 
     this.releaseAttack();
     this.attackCooldown = 3 + this.rng() * 4;
     this.attackCheck = 0;
+
+    // slipstream / sollama
+    this.otState = OT_NONE;
+    this.otTarget = null;
+    this.otSide = 0;
+    this.otT = 0;
+    this.otLat = 0;
+    this.otCooldown = 1 + this.rng() * 2;
+    this.otFollowSpeed = Infinity;
+    this.otSeen = null;
+    this.otAccept = false;
+    this.otCheck = 0;
+
+    // savunma
+    this.defendActive = false;
+    this.defendFollower = null;
+    this.defendT = 0;
+    this.defendLat = 0;
+    this.defendCur = 0;
+    this.defendCooldown = 4 + this.rng() * 4;
+    this.defendCheck = 0;
+    this.defSeen = null;
+    this.defAccept = false;
+
+    // hatalar (kolay zorluk)
+    this.lapseT = 0;
+    this.lapseKind = 0;
+    this.lapseSide = 1;
+    this.lapseCheck = 0;
 
     this.rampKey = null;
     this.rampLap = -1;
@@ -136,15 +181,22 @@ export class BotDriver {
     this.nitroHeldT = 0;
     this.prevBurst = -1;
     this.chainPressAt = 0.8;
+    this.chainOn = true;
+    this.nitroPlanT = 0;
+    this.freeD = 0;
+    this.shockPhase = 0;
+    this.shockCooldown = 0;
+    this.wasteT = 0;
 
-    this.driftOn = false;
-    this.driftT = 0;
-    this.driftMaxErr = 0;
 
     this.stuckT = 0;
     this.recoverT = 0;
+    this.recoverMax = 0;
+    this.recoverElapsed = 0;
     this.stuckGrace = 0;
     this.wallT = 0;
+    this.vTarget = 0;
+    this.wasteNow = 0;
   }
 
   getInput(dt, ctx) {
@@ -174,10 +226,12 @@ export class BotDriver {
       this.stuckT = 0;
       this.recoverT = 0;
       this.overrideW = 0;
+      this.stats.recover++;
     }
     this.raceClock += dt;
     this.sinceRespawn += dt;
 
+    const P = this.profile;
     const line = this.line;
     const model = this.model;
     const vel = car.velocity;
@@ -192,9 +246,11 @@ export class BotDriver {
     const lat = car.lateral;
     const halfW = line.halfWidthAt(s);
     const lim = Math.max(0, halfW - TUNING.edge);
+    const myHalf = Number.isFinite(car.halfWidth) ? car.halfWidth : 1;
 
     this.learn(dt, vx, vz, vH, vF, yaw, lat, halfW);
     model.observeFleet(ctx, dt, line);
+    if (Number.isFinite(car.maxSpeed) && car.maxSpeed > 20) model.setTopSpeed(car.maxSpeed);
 
     // --- Lastik bant -------------------------------------------------------------------------------
     let boost = 0;
@@ -203,30 +259,38 @@ export class BotDriver {
     if (player && player !== car && !player.finished && !car.finished
       && Number.isFinite(player.raceDistance) && Number.isFinite(car.raceDistance)) {
       const gap = car.raceDistance - player.raceDistance; // + bot önde
-      boost = smooth01((-gap - TUNING.rubberBehind) / 150);
-      slow = smooth01((gap - TUNING.rubberAhead) / 200);
+      boost = Math.min(1, smooth01((-gap - P.rubberBehind[0]) / P.rubberBehind[1]) * P.rubberBoostMul);
+      slow = Math.min(1, smooth01((gap - P.rubberAhead[0]) / P.rubberAhead[1]) * P.rubberSlowMul);
     }
 
-    // --- Gürültü (yetenek) ---------------------------------------------------------------------------
+    // --- Gürültü (yetenek) ve hatalar ----------------------------------------------------------------
     this.updateNoise(dt);
+    const kNear = this.maxCurvature(s, 90);
+    this.updateLapse(dt, kNear);
 
     const aLat = this.latAccel * (1 + 0.08 * boost - 0.14 * slow);
-    const capMargin = Math.min(0.95, this.capMargin + 0.04 * boost - 0.08 * slow);
+    const capMargin = Math.min(0.97, this.capMargin + 0.04 * boost - 0.08 * slow);
 
     // --- Yanal plan ---------------------------------------------------------------------------------
-    const kNear = this.maxCurvature(s, 90);
     const plannedLat = this.baseLatAt(s + 15);
     this.followSpeed = Infinity;
     this.updateAttack(dt, ctx, s, lat, vF, lim, kNear);
+    this.updateOvertake(dt, ctx, s, lat, vF, lim, kNear);
     this.updateAvoidance(dt, ctx, s, lat, vF, lim, plannedLat);
+    this.updateDefend(dt, ctx, s, lat, vF, lim, kNear);
     if (this.avoidActive && this.attackTarget && this.attackPhase !== 'ram') this.endAttack(2);
 
     let overrideTarget = NaN;
     if (this.attackTarget) overrideTarget = this.attackLat;
     else if (this.avoidActive) overrideTarget = this.avoidLat;
+    else if (this.otState !== OT_NONE) overrideTarget = this.otLat;
+    else if (this.defendActive) overrideTarget = this.defendCur;
     else {
       const rampLat = this.updateRamp(s, lim);
       if (!Number.isNaN(rampLat)) overrideTarget = rampLat;
+    }
+    if (this.lapseT > 0 && this.lapseKind === 2 && Number.isNaN(overrideTarget)) {
+      overrideTarget = clamp(this.baseLatAt(s + 15) + this.lapseSide * 3, -lim, lim); // geniş gitme hatası
     }
     if (!Number.isNaN(overrideTarget)) {
       this.overrideLat = clamp(overrideTarget, -lim, lim);
@@ -235,45 +299,77 @@ export class BotDriver {
       this.overrideW = Math.max(0, this.overrideW - dt * 1.2);
     }
 
+    // --- Bariyer koruması: yanal hızla 0.5 s sonrası duvara varacaksak içeri dön ----------------------
+    const si = line.sampleIndex(s);
+    const vLatV = vx * line.rx[si] + vz * line.rz[si]; // + sağa doğru
+    const latPred = lat + vLatV * 0.5;
+    const wallLim = halfW - myHalf - TUNING.wallMargin;
+    let guard = 0;
+    if (lat * vLatV > 0 || Math.abs(lat) > wallLim - 0.3) {
+      const side = lat >= 0 ? 1 : -1;
+      guard = clamp((Math.abs(latPred) * (latPred * side > 0 ? 1 : 0) - (wallLim - 0.8)) / 1.4, 0, 1);
+    }
+
     // --- Direksiyon: pure pursuit -------------------------------------------------------------------
+    const kHere0 = Math.abs(line.curvatureAt(s + Math.max(vF, 0) * 0.25));
     let ld = clamp(TUNING.lookaheadBase + TUNING.lookaheadTime * Math.max(vF, 0), TUNING.lookaheadMin, TUNING.lookaheadMax);
+    ld = Math.max(TUNING.lookaheadMin, ld / (1 + TUNING.lookaheadCurve * kHere0));
     if (this.attackPhase === 'strike') ld *= 0.65;
+    ld *= 1 - 0.3 * guard;
     const sT = s + ld;
     let latT = this.baseLatAt(sT);
     if (this.overrideW > 0) latT += (this.overrideLat - latT) * this.overrideW;
     const limT = Math.max(0, line.halfWidthAt(sT) - TUNING.edge);
+    if (!this.attackTarget && (this.laneMin > -1e8 || this.laneMax < 1e8)) {
+      // yanımızdaki arabanın tarafında kal (yanal mesafeyi azaltma)
+      if (this.laneMin > this.laneMax) latT = clamp(lat, this.laneMax, this.laneMin);
+      else latT = clamp(latT, this.laneMin, this.laneMax);
+    }
     latT = clamp(latT, -limT, limT);
+    if (guard > 0) latT += ((lat >= 0 ? -1 : 1) * Math.max(0, halfW - 4.5) - latT) * guard;
     const pt = line.pointAt(sT, latT, this.tmpPoint);
     const dx = pt.x - car.position.x;
     const dz = pt.z - car.position.z;
-    const localF = dx * fx + dz * fz; // ileri
-    const localR = -dx * fz + dz * fx; // sağ: right = (-cos yaw, 0, sin yaw)
+    // sürüş (drift) sırasında gövde hız vektöründen 25-45° sapar; yönelimi yol (hız) yönünden al
+    let hx = fx;
+    let hz = fz;
+    if (car.drifting && vH > 5) {
+      hx = vx / vH;
+      hz = vz / vH;
+    }
+    const localF = dx * hx + dz * hz; // ileri
+    const localR = -dx * hz + dz * hx; // sağ: right = (-cos yaw, 0, sin yaw)
     const dist2 = localF * localF + localR * localR;
     let steer;
     let facingAway = false;
+    let kappaCmd = 0;
     if (localF < 0.25 * Math.sqrt(dist2)) {
       // hedef yanda/arkada (ters yön, savrulma): tam kır, merkezden uzaklaşma
       facingAway = true;
       steer = localR >= 0 ? 1 : -1;
     } else {
-      const kappaCmd = (2 * localR) / Math.max(dist2, 1); // + sağa
+      kappaCmd = (2 * localR) / Math.max(dist2, 1); // + sağa
       steer = kappaCmd / model.steerGain(Math.max(vH, 4));
     }
     steer = clamp(steer + this.steerNoise, -1, 1);
 
     // --- Hız planı -------------------------------------------------------------------------------------
     let vTarget = this.plannedSpeed(s, vF, aLat, capMargin);
+    if (this.lapseT > 0 && this.lapseKind === 1) vTarget *= 1.12; // geç fren hatası
     if (facingAway) vTarget = Math.min(vTarget, 8); // geri dönüş: küçük yarıçap için yavaş
     // duvara sürtünürken içeri dönmek istiyorsak gaz kes: düşük hızda araba daha kolay döner
-    const myHalf = Number.isFinite(car.halfWidth) ? car.halfWidth : 1;
     if (Math.abs(lat) > halfW - myHalf - 0.5 && (latT - lat) * Math.sign(lat) < -2) {
       this.wallT += dt;
       if (this.wallT > 0.25) vTarget = Math.min(vTarget, Math.max(vF - 1, 12));
     } else {
       this.wallT = 0;
     }
+    if (guard > 0.5) vTarget = Math.min(vTarget, Math.max(vF - 2 * guard, 14));
     if (this.followSpeed < vTarget) vTarget = this.followSpeed;
+    if (this.squeezeSpeed < vTarget) vTarget = Math.max(this.squeezeSpeed, 0);
+    if (this.otState === OT_FOLLOW && this.otFollowSpeed < vTarget) vTarget = this.otFollowSpeed;
     if (this.attackTarget) vTarget = Math.min(vTarget, this.attackSpeed);
+    this.vTarget = vTarget;
     let vCap = Infinity;
     if (model.topSpeed > 20) {
       const ratio = this.speedRatio + 0.1 * boost - 0.1 * slow;
@@ -285,50 +381,45 @@ export class BotDriver {
     if (vF > vTarget) {
       throttle = 0;
       const over = vF - vTarget;
-      if (over > 1.5 && vF > 3) brake = clamp((over - 1.5) / 5, 0, 1);
+      if (over > TUNING.brakeSlack && vF > 3) brake = clamp((over - TUNING.brakeSlack) / TUNING.brakeGain, 0, 1);
     } else if (vF > vCap - 2) {
       throttle = clamp((vCap - vF) * 0.5, 0, 1);
     }
+    if (this.lapseT > 0 && this.lapseKind === 3) throttle *= 0.35; // gaz kesme hatası
 
-    // --- Drift (yetenekli botlar, keskin virajda) ------------------------------------------------------
-    const kHere = Math.abs(line.curvatureAt(s + Math.max(vF, 0) * 0.3));
-    const lineErr = Math.abs(lat - this.baseLatAt(s));
-    let drift = false;
-    if (this.driftOn) {
-      this.driftT += dt;
-      if (lineErr > this.driftMaxErr) this.driftMaxErr = lineErr;
-      if (kHere < 1 / 110 || vF < 18 || this.driftT > 3.5 || lineErr > 4.5 || car.airborne) {
-        if (this.driftT > 0.4) model.observeDrift(this.driftMaxErr < 4);
-        this.driftOn = false;
-      }
-    } else if (this.skill >= TUNING.driftMinSkill && model.driftTrust > 0.4 && vF > 25 && !car.airborne
-      && kHere > 1 / 75 && vF - vTarget > 3 && lineErr < 2.5 && !this.attackTarget) {
-      this.driftOn = true;
-      this.driftT = 0;
-      this.driftMaxErr = 0;
-    }
-    if (this.driftOn) {
-      drift = true;
-      brake = Math.min(brake, 0.5);
-    }
+    // --- Drift: botlar sürüş (drift) yapmaz. Car'ın drift modeli gövdeyi hız vektöründen 25-45° saptırır ve çıkışta
+    // yol aniden o kadar kırılır (yüksek hızda duvar); simülasyonda drift duvar teması/wreck'i belirgin artırıyordu.
+    // Hız kazancı da yok (drift'te yol dönüş hızı normal direksiyondan düşük). Bkz. profile.drift.
+    const drift = false;
 
     // --- Nitro -----------------------------------------------------------------------------------------
-    const nitro = this.updateNitro(dt, s, vF, aLat, capMargin, boost, slow);
+    const nitro = this.updateNitro(dt, ctx, s, vF, aLat, capMargin, boost, slow, kNear, kHere0);
 
     // --- Takılma kurtarma ------------------------------------------------------------------------------
     if (this.recoverT > 0) {
       this.recoverT -= dt;
+      this.recoverElapsed += dt;
+      // burnu pist yönüne çevirecek şekilde geri git; yönelme düzelince ya da süre dolunca bırak
+      const tIdx = si;
+      const tyaw = Math.atan2(line.tx[tIdx], line.tz[tIdx]);
+      const dYaw = wrapAngle(tyaw - yaw);
       throttle = 0;
       brake = 1;
-      steer = 0;
-      if (this.recoverT <= 0) this.stuckGrace = 2.5;
+      steer = Math.abs(dYaw) > 0.3 ? (dYaw > 0 ? 1 : -1) : 0; // geri vitesteyken + direksiyon yaw'u artırır
+      if (vF > 1.5) steer = 0;
+      if ((Math.abs(dYaw) < 0.55 && this.recoverElapsed > 0.5) || this.recoverT <= 0) {
+        this.recoverT = 0;
+        this.stuckGrace = 2.5;
+      }
     } else {
       if (this.stuckGrace > 0) this.stuckGrace -= dt;
       if (this.raceClock > 3 && this.stuckGrace <= 0 && !car.airborne && Math.abs(vF) < 2) {
         this.stuckT += dt;
-        if (this.stuckT > 1.2) {
+        if (this.stuckT > 1.0) {
           this.stuckT = 0;
-          this.recoverT = 1.1;
+          this.recoverT = 1.8;
+          this.recoverElapsed = 0;
+          this.stats.recover++;
         }
       } else {
         this.stuckT = 0;
@@ -337,12 +428,13 @@ export class BotDriver {
 
     // direksiyon çıkışını yumuşat (salınım ve titremeye karşı)
     const slew = TUNING.steerSlew * dt;
-    this.steerOut += clamp(steer - this.steerOut, -slew, slew);
+    if (drift) this.steerOut = steer; // sürüşte direksiyon doğrudan açıyı belirler
+    else this.steerOut += clamp(steer - this.steerOut, -slew, slew);
 
     input.throttle = throttle;
     input.brake = brake;
     input.steer = this.steerOut;
-    input.nitro = nitro;
+    input.nitro = this.recoverT > 0 ? false : nitro;
     input.drift = drift;
     this.lastThrottle = throttle;
     this.lastBrake = brake;
@@ -358,7 +450,6 @@ export class BotDriver {
     input.drift = false;
     this.steerOut = 0;
     this.nitroHold = false;
-    this.driftOn = false;
     this.lastThrottle = 0;
     this.lastBrake = 0;
   }
@@ -367,9 +458,16 @@ export class BotDriver {
     this.prevValid = false;
     this.endAttack(4);
     this.avoidActive = false;
-    this.driftOn = false;
+    this.endOvertake(2);
+    this.defendActive = false;
+    this.defendCooldown = 3;
+    this.lapseT = 0;
     this.nitroHold = false;
     this.prevBurst = -1;
+    this.shockPhase = 0;
+    this.recoverT = 0;
+    this.wander = 0;
+    this.steerNoise = 0;
   }
 
   // ---------------------------------------------------------------------------------------------------
@@ -392,7 +490,7 @@ export class BotDriver {
         && Math.abs(lat) < halfW - 2.2 && Math.abs(vy) < 3;
       if (clean) model.observeSteer(this.steerApplied, vH, omegaRight);
 
-      if (this.lastBrake >= 0.9 && this.prevSpeedF > 15 && !car.nitroActive && dv < 60 * dt) {
+      if (this.lastBrake >= 0.9 && this.prevSpeedF > 15 && !car.nitroActive && !car.drifting && dv < 60 * dt) {
         model.observeBrake((this.prevSpeedF - vF) / dt);
       }
     }
@@ -415,6 +513,27 @@ export class BotDriver {
     this.wander += -this.wander * kw + this.gauss() * Math.sqrt(2 * kw) * this.wanderSigma;
     const ks = dt / 0.35;
     this.steerNoise += -this.steerNoise * ks + this.gauss() * Math.sqrt(2 * ks) * this.steerNoiseSigma;
+  }
+
+  // Kolay zorluk: ara sıra kısa süreli hatalar (geç fren, geniş gitme, gaz kesme).
+  updateLapse(dt, kNear) {
+    const P = this.profile;
+    if (P.lapseRate <= 0) return;
+    if (this.lapseT > 0) {
+      this.lapseT -= dt;
+      if (this.lapseT <= 0) this.lapseKind = 0;
+      return;
+    }
+    this.lapseCheck -= dt;
+    if (this.lapseCheck > 0 || this.raceClock < 6 || this.sinceRespawn < 4) return;
+    this.lapseCheck = 0.25;
+    if (this.rng() >= P.lapseRate * 0.25) return;
+    const r = this.rng();
+    // geç fren yalnızca virajın yakınında anlamlı
+    this.lapseKind = kNear > 1 / 150 && r < 0.4 ? 1 : r < 0.75 ? 2 : 3;
+    this.lapseSide = this.rng() < 0.5 ? -1 : 1;
+    this.lapseT = lerp(P.lapseDur[0], P.lapseDur[1], this.rng());
+    this.stats.lapse++;
   }
 
   /** Bu botun s'deki temel yanal hedefi: yarış çizgisi + şerit tercihi + gezinme. */
@@ -454,7 +573,7 @@ export class BotDriver {
   /** Şu an olunabilecek en yüksek hız: önümüzdeki virajlara fren mesafesiyle bakarak. */
   plannedSpeed(s, vF, aLat, capMargin) {
     const line = this.line;
-    const aBrake = Math.max(8, this.model.brakeDecel * TUNING.brakeMargin);
+    const aBrake = Math.max(8, this.model.brakeDecel * this.brakeMargin);
     const v0 = Math.max(vF, 0);
     const lead = v0 * this.reaction;
     const horizon = (v0 * v0) / (2 * aBrake) + lead + 12;
@@ -477,10 +596,32 @@ export class BotDriver {
     return vT;
   }
 
+  /**
+   * vNeed hızıyla girilirse fren yapmak zorunda kalacağımız noktaya kadar kalan mesafe (en çok 300 m).
+   * Nitro kararı: patlamanın bitmesine yetecek serbest yol var mı?
+   */
+  brakeFreeDistance(s, vNeed, aLat, capMargin) {
+    const line = this.line;
+    const aBrake = Math.max(8, this.model.brakeDecel * this.brakeMargin);
+    const steps = Math.min(line.n, Math.ceil(300 / line.ds));
+    const i0 = Math.floor(line.indexOf(s));
+    let best = 300;
+    for (let j = 0; j <= steps; j += 2) {
+      const k = line.absCurvatureAtIndex(i0 + j);
+      if (k < 2e-4) continue;
+      const vc = this.cornerSpeed(k, aLat, capMargin);
+      if (vc >= vNeed) continue;
+      const d = j * line.ds - (vNeed * vNeed - vc * vc) / (2 * aBrake);
+      if (d < best) best = d;
+    }
+    return best > 0 ? best : 0;
+  }
+
   // ---------------------------------------------------------------------------------------------------
   // Takedown saldırısı: yakındaki rakibe (öncelikle oyuncuya) yandan yanaşıp duvara doğru vur.
   updateAttack(dt, ctx, s, lat, vF, lim, kNear) {
     const car = this.car;
+    const P = this.profile;
     const L = this.line.trackLength;
     if (this.attackCooldown > 0) this.attackCooldown -= dt;
 
@@ -489,12 +630,13 @@ export class BotDriver {
       this.attackT += dt;
       if (v.wrecked) {
         // başarı (ya da başkası devirdi)
-        this.endAttack(7 + 9 * (1 - this.aggression));
+        this.endAttack((7 + 9 * (1 - this.aggression)) / Math.max(0.5, P.attackMul));
         return;
       }
       let ds = v.trackS - s;
       ds -= Math.round(ds / L) * L;
-      if (v.ghost || v.finished || car.finished || ds > 45 || ds < -20 || this.attackT > 8 || kNear > 1 / 90) {
+      if (v.ghost || v.finished || car.finished || ds > 45 || ds < -20 || this.attackT > 8 || kNear > 1 / 90
+        || this.otState === OT_SWING) {
         this.endAttack(3);
         return;
       }
@@ -524,13 +666,13 @@ export class BotDriver {
         this.strikeT += dt;
         this.attackLat = v.lateral - side * 1.8; // içinden geçecekmiş gibi yüklen
         this.attackSpeed = vSpeed + 1.5 + ds * 0.5;
-        if (this.strikeT > 1.1) this.endAttack(4 + 6 * (1 - this.aggression));
+        if (this.strikeT > 1.1) this.endAttack((4 + 6 * (1 - this.aggression)) / Math.max(0.5, P.attackMul));
       } else {
         // ram: arkadan aynı şeritte
         this.strikeT += dt;
         this.attackLat = v.lateral;
         this.attackSpeed = 1e3;
-        if (this.strikeT > 3 || closing < 1) this.endAttack(4 + 6 * (1 - this.aggression));
+        if (this.strikeT > 3 || closing < 1) this.endAttack((4 + 6 * (1 - this.aggression)) / Math.max(0.5, P.attackMul));
       }
       return;
     }
@@ -538,7 +680,8 @@ export class BotDriver {
     this.attackCheck -= dt;
     if (this.attackCooldown > 0 || this.attackCheck > 0) return;
     this.attackCheck = 0.5;
-    if (car.finished || vF < 25 || kNear > 1 / 160 || this.aggression <= 0) return;
+    if (car.finished || vF < 25 || kNear > 1 / 160 || this.aggression <= 0 || P.attackMul <= 0) return;
+    if (this.otState === OT_SWING) return;
 
     let best = null;
     let bestScore = 0;
@@ -554,20 +697,26 @@ export class BotDriver {
       const owner = attackClaims.get(c);
       if (owner && owner !== this && owner.attackTarget === c) continue;
       const weight = c === ctx.player ? 1 : car.isPlayer ? 0.7 : 0.35;
-      const score = weight * (1 - Math.abs(ds) / 40);
+      let score = weight * (1 - Math.abs(ds) / 40);
+      if (P.attackNeedsPin) {
+        // akıllı saldırı: duvara yakın (sıkıştırılabilir) kurbanlara öncelik ver
+        const wallGap = this.line.halfWidthAt(c.trackS) - Math.abs(c.lateral);
+        score *= wallGap < 4.5 ? 1.5 : 0.8;
+      }
       if (score > bestScore) {
         bestScore = score;
         best = c;
       }
     }
     if (!best) return;
-    if (this.rng() > this.aggression * 0.3 * bestScore) return;
+    if (this.rng() > this.aggression * 0.3 * P.attackMul * bestScore) return;
 
     this.attackTarget = best;
     attackClaims.set(best, this);
     this.attackPhase = 'approach';
     this.attackT = 0;
     this.strikeT = 0;
+    this.stats.attack++;
     const dLat = lat - best.lateral;
     // bulunduğumuz taraftan yanaş; hizadaysak kurbanı yakın duvarına it
     this.attackSide = Math.abs(dLat) > 0.5 ? Math.sign(dLat) : (best.lateral >= 0 ? -1 : 1);
@@ -592,24 +741,246 @@ export class BotDriver {
   }
 
   // ---------------------------------------------------------------------------------------------------
+  // Slipstream ve sollama: öndeki arabanın arkasına bilinçli gir (draft), yaklaşınca bir taraf seç ve
+  // sollama bitene dek o tarafa bağlı kal.
+  updateOvertake(dt, ctx, s, lat, vF, lim, kNear) {
+    const car = this.car;
+    const P = this.profile;
+    const L = this.line.trackLength;
+    if (this.otCooldown > 0) this.otCooldown -= dt;
+    if (car.draft > 0.3) this.stats.slipTime += dt;
+
+    if (this.otState !== OT_NONE) {
+      const v = this.otTarget;
+      this.otT += dt;
+      let ds = v.trackS - s;
+      ds -= Math.round(ds / L) * L;
+      const closing = vF - v.speed;
+      if (v.wrecked || v.ghost || v.airborne || v.finished || car.finished || this.attackTarget || ds > 60 || ds < -25
+        || vF < 18 || this.otT > 16) {
+        this.endOvertake(1.5);
+        return;
+      }
+      if (this.otState === OT_FOLLOW) {
+        if (ds < -3 || kNear > 1 / 60) {
+          this.endOvertake(1.5);
+          return;
+        }
+        this.otLat = clamp(v.lateral, -lim, lim);
+        this.otFollowSpeed = v.speed + clamp((ds - 7) * 0.9, -4, 14) + 2;
+        const straight = kNear < 1 / 110;
+        const swingDist = clamp(7 + closing * 0.55, 8.5, 17);
+        if (straight && ((ds <= swingDist && closing > 0.8) || ds <= 8.5 || (closing > 7 && ds < 22))) this.startSwing(v, ctx, s, lat, lim, ds);
+        else if (this.otT > 9 && closing < 0.5) this.endOvertake(4); // sonuç yok: vazgeç
+        return;
+      }
+      // SWING: seçilen tarafa bağlı kal
+      this.otLat = clamp(v.lateral + this.otSide * 3.5, -lim, lim);
+      this.otFollowSpeed = Infinity;
+      if (Math.abs(this.otLat - v.lateral) < 2.5 && ds > 3) {
+        // seçilen tarafta yer kalmadı: takibe dön (taraf değiştirmeden)
+        this.otState = OT_FOLLOW;
+        this.otT = 0;
+        this.otCooldown = 0;
+        return;
+      }
+      if (ds < -6.5) {
+        this.stats.overtake++;
+        this.endOvertake(1.2);
+        return;
+      }
+      if (this.otT > 8 || kNear > 1 / 45) this.endOvertake(2.5);
+      return;
+    }
+
+    if (this.otCooldown > 0 || P.slip <= 0 || this.attackTarget || car.finished || vF < 30 || kNear > 1 / 130) return;
+    this.otCheck -= dt;
+    if (this.otCheck > 0) return;
+    this.otCheck = 0.1;
+
+    let best = null;
+    let bestDs = 1e9;
+    const cars = ctx.cars;
+    for (let i = 0; i < cars.length; i++) {
+      const c = cars[i];
+      if (!c || c === car || c.wrecked || c.ghost || c.finished || c.airborne) continue;
+      let ds = c.trackS - s;
+      ds -= Math.round(ds / L) * L;
+      if (ds < 6 || ds > 36 || ds >= bestDs) continue;
+      if (Math.abs(c.lateral - lat) > 4) continue;
+      if (c.speed < 12 || vF + 8 < c.speed) continue; // yetişilemez
+      best = c;
+      bestDs = ds;
+    }
+    if (!best) return;
+    if (this.otSeen !== best) {
+      this.otSeen = best;
+      this.otAccept = this.rng() < P.slip;
+    }
+    if (!this.otAccept) return;
+    this.otState = OT_FOLLOW;
+    this.otTarget = best;
+    this.otT = 0;
+    this.otSide = 0;
+    this.otLat = best.lateral;
+    this.otFollowSpeed = best.speed + 6;
+    this.stats.follow++;
+  }
+
+  startSwing(v, ctx, s, lat, lim, ds) {
+    const L = this.line.trackLength;
+    // her iki taraftaki boşluk: yol kenarına kalan mesafe ve komşu arabalar
+    const roomR = lim - v.lateral;
+    const roomL = v.lateral + lim;
+    // bulunduğumuz taraftan geç: öndekinin arkasından karşı tarafa çapraz geçmek tampona çarpma riski taşır
+    const off = lat - v.lateral;
+    const cross = Math.abs(off) > 0.7 ? (ds < 14 ? 12 : 5) : 0;
+    let costR = -roomR + (off > 0.7 ? -1.2 : off < -0.7 ? cross : 0);
+    let costL = -roomL + (off < -0.7 ? -1.2 : off > 0.7 ? cross : 0);
+    // yaklaşan virajın içinden sollamak daha avantajlı
+    const kSigned = this.line.curvatureAt(s + 90);
+    if (kSigned > 5e-4) costR -= 1.5;
+    else if (kSigned < -5e-4) costL -= 1.5;
+    // komşu arabalar (yanımızdaki şeridi tutan)
+    const cars = ctx.cars;
+    for (let i = 0; i < cars.length; i++) {
+      const c = cars[i];
+      if (!c || c === this.car || c === v || c.wrecked || c.ghost) continue;
+      let d2 = c.trackS - s;
+      d2 -= Math.round(d2 / L) * L;
+      if (d2 < -6 || d2 > ds + 12) continue;
+      const rel = c.lateral - v.lateral;
+      if (rel > 1.5 && rel < 6) costR += 6;
+      else if (rel < -1.5 && rel > -6) costL += 6;
+    }
+    this.otSide = costR <= costL ? 1 : -1;
+    // seçilen taraf için yeterli yer yoksa takipte kal
+    const room = this.otSide > 0 ? roomR : roomL;
+    if (room < 2.6) {
+      this.otSide = -this.otSide;
+      if ((this.otSide > 0 ? roomR : roomL) < 2.6) return;
+    }
+    this.otState = OT_SWING;
+    this.otT = 0;
+    this.stats.swing++;
+  }
+
+  endOvertake(cooldown) {
+    this.otState = OT_NONE;
+    this.otTarget = null;
+    this.otSide = 0;
+    this.otT = 0;
+    this.otFollowSpeed = Infinity;
+    this.otCooldown = Math.max(this.otCooldown || 0, cooldown);
+  }
+
+  // ---------------------------------------------------------------------------------------------------
+  // Savunma: yakından arkadaki rakip çizgimizi tehdit ederken, onun hattını kapatacak şekilde TEK bir hareketle
+  // yana kay (sınırlı süre, sınırlı yanal hız, duvardan uzak); sonra pozisyonu koru, zikzak yapma.
+  updateDefend(dt, ctx, s, lat, vF, lim, kNear) {
+    const car = this.car;
+    const P = this.profile;
+    const L = this.line.trackLength;
+    if (this.defendCooldown > 0) this.defendCooldown -= dt;
+
+    if (this.defendActive) {
+      this.defendT += dt;
+      const f = this.defendFollower;
+      let ds = f.trackS - s;
+      ds -= Math.round(ds / L) * L;
+      if (f.wrecked || f.ghost || f.airborne || ds > -1 || ds < -34 || this.defendT > 3.4 || kNear > 1 / 110
+        || this.otState === OT_SWING || this.attackTarget || car.finished) {
+        this.defendActive = false;
+        this.defendFollower = null;
+        this.defendCooldown = 4 + this.rng() * 5;
+        return;
+      }
+      const step = 2.4 * dt; // m/s yanal hız sınırı
+      this.defendCur += clamp(this.defendLat - this.defendCur, -step, step);
+      return;
+    }
+
+    if (P.defend <= 0 || this.defendCooldown > 0 || this.otState === OT_SWING || this.attackTarget || car.finished
+      || vF < 28 || kNear > 1 / 140) return;
+    this.defendCheck -= dt;
+    if (this.defendCheck > 0) return;
+    this.defendCheck = 0.3;
+
+    let best = null;
+    let bestDs = -1e9;
+    const cars = ctx.cars;
+    for (let i = 0; i < cars.length; i++) {
+      const c = cars[i];
+      if (!c || c === car || c.wrecked || c.ghost || c.finished || c.airborne) continue;
+      let ds = c.trackS - s;
+      ds -= Math.round(ds / L) * L;
+      if (ds > -4.5 || ds < -24 || ds <= bestDs) continue;
+      if (Math.abs(c.lateral - lat) > 6) continue;
+      if (c.speed < 20 || c.speed < vF - 3) continue; // geride kalıyor: tehdit değil
+      if (ds < -14 && c.speed - vF < 1) continue;
+      best = c;
+      bestDs = ds;
+    }
+    if (!best) return;
+    if (this.defSeen !== best) {
+      this.defSeen = best;
+      const w = best === ctx.player ? 1 : P.defend >= 1 ? 1 : 0.6;
+      this.defAccept = this.rng() < P.defend * w;
+    }
+    if (!this.defAccept) return;
+    const delta = best.lateral - lat;
+    const maxLat = Math.max(0, lim - 1.0);
+    this.defendLat = clamp(Math.abs(delta) < 0.7 ? lat : lat + clamp(delta, -3.2, 3.2), -maxLat, maxLat);
+    this.defendCur = lat;
+    this.defendActive = true;
+    this.defendFollower = best;
+    this.defendT = 0;
+    this.stats.defend++;
+  }
+
+  // ---------------------------------------------------------------------------------------------------
   // Sollama/kaçınma: önümüzdeki ~25 m'de yolumuzu kesen arabalar için yanal "yasak bantlar" çıkar,
   // planlanan çizgi bir banda düşüyorsa en ucuz boş yanal konumu seç; hiç yer yoksa takip et.
   updateAvoidance(dt, ctx, s, lat, vF, lim, plannedLat) {
     const car = this.car;
     const L = this.line.trackLength;
     const myHalf = Number.isFinite(car.halfWidth) ? car.halfWidth : 1;
+    const margin = this.profile.avoidMargin;
     const lo = this.bandLo;
     const hi = this.bandHi;
     let count = 0;
     let followSpeed = Infinity;
+    let laneMin = -1e9;
+    let laneMax = 1e9;
+    let squeeze = Infinity;
     const cars = ctx.cars;
+    const handled = this.otState !== OT_NONE ? this.otTarget : null;
     for (let i = 0; i < cars.length; i++) {
       const c = cars[i];
-      if (!c || c === car || c === this.attackTarget) continue;
+      if (!c || c === car || c === this.attackTarget || c === handled) continue;
       let ds = c.trackS - s;
       ds -= Math.round(ds / L) * L;
-      if (!(ds >= -4.5)) continue; // arka tamponu hâlâ yanımızdaysa say
+      if (!(ds >= -TUNING.avoidBehind)) continue; // arka tamponu hâlâ yanımızdaysa say
       const wrecked = c.wrecked;
+      if (ds < TUNING.alongside) {
+        // yanımızda (ya da tamponu yanımızda): şerit koruma. Hangi tarafındaysak orada kal; kenara sıkışırsak
+        // arkadaki olan (bu arabanın önünde olan biz değilsek) yavaşlayıp geride kalır.
+        if (wrecked || c.ghost === true) continue;
+        const halfA = myHalf + (Number.isFinite(c.halfWidth) ? c.halfWidth : 1) + margin;
+        let shiftA = 0;
+        if (c.velocity) {
+          const ci = this.line.sampleIndex(c.trackS);
+          shiftA = clamp((c.velocity.x * this.line.rx[ci] + c.velocity.z * this.line.rz[ci]) * TUNING.avoidLatLead, -3, 3);
+        }
+        const loA = c.lateral - halfA + Math.min(0, shiftA);
+        const hiA = c.lateral + halfA + Math.max(0, shiftA);
+        if (lat >= c.lateral) {
+          if (hiA > laneMin) laneMin = hiA;
+        } else if (loA < laneMax) laneMax = loA;
+        if (ds > 0.5 && (laneMin > lim || laneMax < -lim)) squeeze = Math.min(squeeze, c.speed - 3);
+        continue;
+      }
+
       const cSpeed = wrecked ? 0 : c.speed;
       const closing = vF - cSpeed;
       // ~25 m; hızla yaklaşılan (ör. devrilmiş) araçlar için kapanma hızıyla uzar
@@ -618,14 +989,23 @@ export class BotDriver {
       if (ds > 5 && !wrecked && closing < 0.5) continue; // bizden hızlı, uzaklaşıyor
       if (ds > 5 && (ds - 5) / Math.max(closing, 0.1) > 2.2) continue; // daha vakit var
       if (count >= MAX_BANDS) break;
-      const half = myHalf + (Number.isFinite(c.halfWidth) ? c.halfWidth : 1) + TUNING.avoidMargin;
-      lo[count] = c.lateral - half;
-      hi[count] = c.lateral + half;
+      const half = myHalf + (Number.isFinite(c.halfWidth) ? c.halfWidth : 1) + margin;
+      // yanal hareketi öngör: virajda çizgi değiştiren arabanın birkaç yüz ms sonraki konumunu da kapsa
+      let shift = 0;
+      if (!wrecked && c.velocity) {
+        const ci = this.line.sampleIndex(c.trackS);
+        shift = clamp((c.velocity.x * this.line.rx[ci] + c.velocity.z * this.line.rz[ci]) * TUNING.avoidLatLead, -3, 3);
+      }
+      lo[count] = c.lateral - half + Math.min(0, shift);
+      hi[count] = c.lateral + half + Math.max(0, shift);
       this.bandSpeed[count] = wrecked ? -1 : cSpeed;
       this.bandDs[count] = ds;
       count++;
     }
     this.bandCount = count;
+    this.laneMin = laneMin;
+    this.laneMax = laneMax;
+    this.squeezeSpeed = squeeze;
     if (this.avoidHold > 0) this.avoidHold -= dt;
 
     // planlanan çizgi (ve oraya giden yol) bir bandı kesiyor mu? En yakın engel "birincil" bant.
@@ -685,6 +1065,16 @@ export class BotDriver {
       this.avoidLat = bestLat;
       this.avoidSide = bestSide;
       this.avoidHold = 0.6;
+      // yanal kaçış temastan önce yetişmeyecekse (yakın ve hızlı yaklaşıyoruz) aynı anda hızı da düşür
+      const pb = primary;
+      if (this.bandSpeed[pb] >= 0 && this.bandDs[pb] > 4) {
+        const cl = Math.max(vF - this.bandSpeed[pb], 0.1);
+        const tHit = (this.bandDs[pb] - 5) / cl;
+        const tMove = Math.abs(bestLat - lat) / TUNING.avoidLatRate + 0.25;
+        if (tHit < tMove * 1.3) {
+          followSpeed = Math.max(0, this.bandSpeed[pb] + Math.max(0, this.bandDs[pb] - 7) * 0.6);
+        }
+      }
     } else {
       // geçecek yer yok: öndekini takip et (devrilmiş arabalar fiziksel engel değil, onları yok say)
       for (let b = 0; b < count; b++) {
@@ -722,19 +1112,60 @@ export class BotDriver {
   }
 
   // ---------------------------------------------------------------------------------------------------
-  // Nitro: önde ~200 m düz yol varsa bas; patlama ilerlemesi biliniyorsa perfect nitro için zincirle.
-  updateNitro(dt, s, vF, aLat, capMargin, boost, slow) {
+  // Nitro:
+  //   normal → önde ~200 m düz yol varsa bas; patlama ilerlemesi biliniyorsa perfect nitro için zincirle.
+  //   zor    → fren noktasına kadar serbest mesafeye bakar (viraj çıkışlarında da yakar, virajdan hemen önce yakmaz),
+  //            perfect zincirini pencereye tam oturtur, bar doluyken yakında rakip varsa shockwave (çift basış) atar.
+  //   kolay  → yüksek eşik, çoğu zaman zinciri kaçırır, ara sıra yanlış yerde yakar.
+  updateNitro(dt, ctx, s, vF, aLat, capMargin, boost, slow, kNear, kHere) {
     const car = this.car;
+    const P = this.profile;
     let want = false;
     let chain = false; // perfect nitro zinciri (eşik yok: patlama zaten sürüyor)
+    let shock = false;
+    if (this.shockCooldown > 0) this.shockCooldown -= dt;
+    const burstOn = car.nitroActive;
     if (!car.finished && slow < 0.3 && vF > 12 && this.recoverT <= 0) {
-      const threshold = TUNING.nitroMin - 0.18 * boost + 0.1 * (1 - this.skill);
-      const kA = this.line.maxCurvatureAhead(s);
-      const vNeed = vF + 18 - 8 * boost;
-      const straight = kA < 2e-4 || this.cornerSpeed(kA, aLat, capMargin) > vNeed;
-      if (straight && car.nitro > threshold) want = true;
-      if (straight) chain = true;
-      // takedown: arkadan nitroyla vur ya da kurbana yetiş
+      const threshold = P.nitroThreshold - 0.18 * boost + 0.1 * (1 - this.k);
+      if (P.nitroSmart) {
+        this.nitroPlanT -= dt;
+        if (this.nitroPlanT <= 0) {
+          this.nitroPlanT = 0.1;
+          this.freeD = this.brakeFreeDistance(s, vF + 18, aLat, capMargin);
+        }
+        const needD = P.nitroNeed[0] * vF + P.nitroNeed[1];
+        const gentle = kHere < 1 / 140;
+        const straight = gentle && this.freeD >= needD;
+        if (straight && car.nitro > threshold) want = true;
+        if (gentle && this.freeD >= needD * 0.6) chain = true;
+        // devrilme sonrası hızlı toparlanma: bar varsa hemen yak
+        if (this.sinceRespawn < 5 && gentle && car.nitro > 0.04 && this.freeD > 40) {
+          want = true;
+          chain = true;
+        }
+        if (P.shock > 0 && !this.attackTarget) shock = this.shockWanted(ctx, s, vF, kHere);
+      } else {
+        const kA = this.line.maxCurvatureAhead(s);
+        const vNeed = vF + 18 - 8 * boost;
+        const straight = kA < 2e-4 || this.cornerSpeed(kA, aLat, capMargin) > vNeed;
+        if (straight && car.nitro > threshold) want = true;
+        if (straight) chain = true;
+        if (P.nitroChain < 1 && this.chainOn === false) chain = false;
+        if (this.sinceRespawn < 5 && straight && car.nitro > 0.04) want = true;
+        // kolay: ara sıra yanlış yerde yak (verimsiz)
+        if (P.nitroThreshold > 0.5 && !want && car.nitro > 0.45 && !burstOn) {
+          this.wasteT -= dt;
+          if (this.wasteT <= 0) {
+            this.wasteT = 2 + this.rng() * 6;
+            if (this.rng() < 0.3) this.wasteNow = 0.4;
+          }
+          if (this.wasteNow > 0) {
+            this.wasteNow -= dt;
+            want = true;
+          }
+        }
+      }
+      // takedown / sollama: arkadan nitroyla vur ya da kurbana yetiş
       if (this.attackTarget && car.nitro > 0.2 && this.maxCurvature(s, 120) < 1 / 200) {
         if (this.attackPhase === 'ram') want = true;
         else if (this.attackPhase === 'approach') {
@@ -744,20 +1175,55 @@ export class BotDriver {
           if (ds > 10) want = true;
         }
       }
+      if (this.otState === OT_SWING && car.nitro > 0.15 && kNear < 1 / 160 && P.nitroSmart) want = true;
       if (want) chain = true;
+    }
+
+    // --- shockwave: tam bar, çift basış (bas, bırak, 0.35 s içinde tekrar bas) ---------------------------
+    if (this.shockPhase > 0) {
+      let hold = false;
+      if (this.shockPhase === 1) {
+        if (!car.nitroActive) {
+          this.shockPhase = 0;
+          return false;
+        }
+        this.shockPhase = 2; // bırak
+      } else if (this.shockPhase === 2) {
+        hold = true;
+        this.shockPhase = 3;
+      } else if (this.shockPhase === 3) {
+        if (car.nitroLevel === 'shockwave') this.stats.shock++;
+        this.shockPhase = 4;
+        this.shockCooldown = 6;
+      } else if (this.shockPhase === 4) {
+        if (!car.nitroActive) this.shockPhase = 0;
+      }
+      this.nitroHold = hold;
+      this.nitroHeldT = 0;
+      this.prevBurst = -1;
+      return hold;
+    }
+    if (shock && car.nitro >= 0.995 && !car.nitroActive && this.shockCooldown <= 0) {
+      this.shockPhase = 1;
+      this.nitroHold = true;
+      this.nitroHeldT = 0;
+      return true;
     }
 
     const prog = car.nitroBurstProgress;
     const hasProg = typeof prog === 'number' && Number.isFinite(prog);
     let hold;
     if (car.nitroActive) {
-      if (hasProg) {
+      if (car.nitroLevel === 'shockwave') {
+        hold = false;
+        this.prevBurst = prog;
+      } else if (hasProg) {
         if (prog + 0.2 < this.prevBurst) this.rollChain(); // yeni patlama başladı
         if (this.prevBurst < 0) this.rollChain();
         this.prevBurst = prog;
         if (prog < 0.55) hold = this.nitroHold && chain;
         else if (prog < this.chainPressAt) hold = false; // pencereden önce bırak
-        else hold = chain && car.nitro > 0.04; // perfect nitro penceresinde tekrar bas
+        else hold = chain && this.chainOn && car.nitro > 0.04; // perfect nitro penceresinde tekrar bas
       } else {
         hold = chain;
       }
@@ -772,10 +1238,35 @@ export class BotDriver {
     return hold;
   }
 
+  /** Zor zorluk: shockwave için uygun an mı? (düzlük + yakında rakip ya da çok uzun düzlük) */
+  shockWanted(ctx, s, vF, kHere) {
+    const car = this.car;
+    if (car.nitro < 0.995 || car.nitroActive || this.shockCooldown > 0 || vF < 35) return false;
+    if (kHere > 1 / 200 || this.freeD < 190) return false;
+    const L = this.line.trackLength;
+    const cars = ctx.cars;
+    for (let i = 0; i < cars.length; i++) {
+      const c = cars[i];
+      if (!c || c === car || c.wrecked || c.ghost || c.finished || c.airborne) continue;
+      let ds = c.trackS - s;
+      ds -= Math.round(ds / L) * L;
+      if (ds > 6 && ds < 90) return true;
+    }
+    return this.freeD >= 300; // rakip yok ama çok uzun düzlük
+  }
+
   rollChain() {
-    // yetenekli botlar pencereyi (> 0.75) tutturur, yeteneksizler bazen erken/geç basar
+    const P = this.profile;
+    // zorluğa göre basış zamanı: yetenekli botlar pencereyi (> 0.75) tutturur, kolay botlar sık kaçırır
+    const aim = P.nitroChainAim;
     const r = this.rng();
-    const sloppy = (1 - this.skill) * (this.rng() - 0.4) * 0.5;
-    this.chainPressAt = clamp(0.77 + r * 0.09 + sloppy, 0.6, 1.05);
+    const sloppy = (1 - this.k) * (this.rng() - 0.4) * 0.5;
+    if (P.nitroChain < 1) {
+      this.chainOn = this.rng() < P.nitroChain;
+      this.chainPressAt = clamp(lerp(aim[0], aim[1], r) + sloppy, 0.5, 1.05);
+    } else {
+      this.chainOn = true;
+      this.chainPressAt = clamp(lerp(aim[0], aim[1], r) + sloppy * (this.difficulty === 'hard' ? 0.2 : 1), 0.6, 1.05);
+    }
   }
 }

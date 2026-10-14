@@ -18,12 +18,17 @@ const TRUST_SAMPLES = 40; // kutunun kendi tahminine tam güven için örnek say
 
 const models = new WeakMap();
 
-/** Car sınıfı başına paylaşılan model. */
+/** Araç modeli (spec) ya da — spec yoksa — Car sınıfı başına paylaşılan model. */
+export function modelKey(car) {
+  if (car && car.spec && typeof car.spec === 'object') return car.spec;
+  return car && car.constructor ? car.constructor : VehicleModel;
+}
+
 export function getVehicleModel(car) {
-  const key = car && car.constructor ? car.constructor : VehicleModel;
+  const key = modelKey(car);
   let m = models.get(key);
   if (!m) {
-    m = new VehicleModel();
+    m = new VehicleModel(key);
     models.set(key, m);
   }
   return m;
@@ -33,7 +38,8 @@ const binSpeed = (b) => (b + 0.5) * BIN;
 const priorRate = (v) => Math.min(PRIOR_YAW_RATE * Math.min(1, v / 12), PRIOR_LAT_ACCEL / Math.max(v, 1));
 
 export class VehicleModel {
-  constructor() {
+  constructor(key = null) {
+    this.key = key;
     this.rate = new Float64Array(NB); // doğrusal bölge: dönüş hızı / direksiyon
     this.rateN = new Float64Array(NB);
     this.cap = new Float64Array(NB); // tam direksiyonda dönüş hızı
@@ -48,10 +54,17 @@ export class VehicleModel {
     this.capSeen = false;
 
     this.topSpeed = 0; // nitrosuz, düz yolda gözlenen azami hız (0 = bilinmiyor)
+    this.topFixed = false; // Car.maxSpeed biliniyorsa gözlem yerine o kullanılır
     this.fleet = new WeakMap(); // araba → önceki adım (hız, yaw)
     this.lastCtx = null;
     this.brakeDecel = 24; // m/s², fren yavaşlaması
     this.driftTrust = 0.8; // driftin bu arabada çizgiyi bozmadan işe yarayıp yaramadığı (0..1)
+  }
+
+  /** Car.maxSpeed (aracın taban azami hızı) biliniyorsa gözlemin yerine geçer. */
+  setTopSpeed(v) {
+    this.topSpeed = v;
+    this.topFixed = true;
   }
 
   sampleBins(arr, cnt, scale, v) {
@@ -137,6 +150,7 @@ export class VehicleModel {
     for (let i = 0; i < cars.length; i++) {
       const c = cars[i];
       if (!c || !c.velocity || !c.position) continue;
+      if (modelKey(c) !== this.key) continue; // yalnızca aynı araç modeli
       let st = this.fleet.get(c);
       if (!st) {
         st = { speed: 0, yaw: 0, x: NaN, z: NaN, valid: false };
@@ -152,8 +166,8 @@ export class VehicleModel {
         let dYaw = c.yaw - st.yaw;
         dYaw -= Math.round(dYaw / (2 * Math.PI)) * 2 * Math.PI;
         const vy = c.velocity.y || 0;
-        if (acc > -0.6 && acc < 12 &&Math.abs(dYaw / dt) < 0.05 && Math.abs(vy) < 1
-          && Math.abs(line.curvatureAt(c.trackS)) < 1 / 500 && v > this.topSpeed) {
+        if (acc > -0.6 && acc < 12 && Math.abs(dYaw / dt) < 0.05 && Math.abs(vy) < 1
+          && Math.abs(line.curvatureAt(c.trackS)) < 1 / 500 && v > this.topSpeed && !this.topFixed) {
           this.topSpeed = v;
         }
       }

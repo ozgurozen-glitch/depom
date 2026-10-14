@@ -6,15 +6,28 @@
 //             --models vortex,speedster,gripper  --bots N  --radius R (hard/hard2 köşe yarıçapı)  --player none|normal|same
 //             --botIndex i (solo: hangi botun yeteneği)  --reps N  --json
 import { runRace, MODELS } from './sim.mjs';
+import { PROFILES } from '../../src/ai/profile.js';
+import { TUNING } from '../../src/ai.js';
 import { TRACK_IDS } from './tracks.mjs';
 
-const opt = { mode: 'both', track: 'oval,hard', difficulty: 'easy,normal,hard', laps: '2', models: 'vortex,speedster,gripper', bots: '7', radius: '', player: 'normal', botIndex: '0', reps: '1', json: false, maxTime: '0' };
+const opt = { set: '', tune: '', mode: 'both', track: 'oval,hard', difficulty: 'easy,normal,hard', laps: '2', models: 'vortex,speedster,gripper', bots: '7', radius: '', player: 'normal', botIndex: '0', reps: '1', json: false, maxTime: '0' };
 const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i++) {
   const k = argv[i].replace(/^--/, '');
   if (k === 'json') opt.json = true;
   else opt[k] = argv[++i];
 }
+// --set easy.latAccelMul=0.8,hard.capacityUse=0.9:0.97  → profil değerlerini çalışma anında değiştirir (ayar denemeleri)
+for (const kv of list0(opt.set || '')) {
+  const [path, val] = kv.split('=');
+  const [d, key] = path.split('.');
+  PROFILES[d][key] = val.includes(':') ? val.split(':').map(Number) : Number(val);
+}
+for (const kv of list0(opt.tune || '')) {
+  const [k, v] = kv.split('=');
+  TUNING[k] = Number(v);
+}
+function list0(s) { return String(s).split(',').filter(Boolean); }
 const list = (s) => String(s).split(',').filter(Boolean);
 const tracks = opt.track === 'all' ? TRACK_IDS : list(opt.track);
 const diffs = list(opt.difficulty);
@@ -67,7 +80,7 @@ async function raceBlock(trackId) {
   const out = [];
   for (const diff of diffs) {
     let lapAll = [];
-    let totals = { wall: 0, hard: 0, wreck: 0, wreckWall: 0, wreckTd: 0, stuck: 0, reverse: 0, td: 0, bump: 0, slip: 0, slipT: 0, def: 0, ovt: 0, fin: 0, tot: 0, us: [], plPlace: [] };
+    let totals = { wall: 0, hard: 0, wreck: 0, wreckWall: 0, wreckTd: 0, stuck: 0, reverse: 0, td: 0, tdI: 0, tdS: 0, tdA: 0, tdP: 0, attack: 0, follow: 0, swing: 0, shock: 0, lapse: 0, recover: 0, bump: 0, slip: 0, slipT: 0, def: 0, ovt: 0, fin: 0, tot: 0, us: [], plPlace: [] };
     for (let r = 0; r < reps; r++) {
       const res = await runRace({ track: trackId, trackOpts, laps, difficulty: diff, bots, models, player: opt.player, maxTime: Number(opt.maxTime) });
       const bs = res.entries.filter((e) => e.bot);
@@ -80,6 +93,11 @@ async function raceBlock(trackId) {
       totals.stuck += sumStat(res.entries, 'stuck');
       totals.reverse += sumStat(res.entries, 'reverse');
       totals.td += sumStat(bs, 'takedowns');
+      totals.tdI += sumStat(bs, 'tdIntent');
+      totals.tdS += sumStat(bs, 'tdShock');
+      totals.tdA += sumStat(bs, 'tdAccident');
+      totals.tdP += sumStat(bs, 'tdOnPlayer');
+      for (const k of ['attack', 'follow', 'swing', 'shock', 'lapse', 'recover']) totals[k] += bs.reduce((a, e) => a + (e.stats[k] || 0), 0);
       totals.bump += sumStat(bs, 'bumps');
       totals.slip += sumStat(res.entries, 'slipStarts');
       totals.slipT += sumStat(res.entries, 'slipTime');
@@ -94,12 +112,25 @@ async function raceBlock(trackId) {
     const nLaps = Math.max(1, lapAll.length);
     const t = totals;
     console.log(`${diff.padEnd(6)}  ${f2(mean(lapAll)).padStart(9)}  ${`${t.fin}/${t.tot}`.padStart(5)}  ${f1(t.wall / nLaps).padStart(9)}  ${String(t.hard).padStart(4)}  ${`${t.wreck}(${t.wreckWall}/${t.wreckTd})`.padStart(21)}  ${String(t.stuck).padStart(7)}  ${String(t.reverse).padStart(4)}  ${String(t.td).padStart(8)}  ${String(t.bump).padStart(4)}  ${String(t.slip).padStart(9)}  ${f1(t.slipT).padStart(11)}  ${String(t.def).padStart(7)}  ${String(t.ovt).padStart(7)}  ${f1(mean(t.us)).padStart(7)}  ${t.plPlace.join(',')}`);
+    console.log(`        takedown: kasıtlı ${t.tdI} shockwave ${t.tdS} kaza ${t.tdA} (oyuncuya ${t.tdP}) | saldırı ${t.attack} takip ${t.follow} sollama-başlangıç ${t.swing} shock ${t.shock} hata ${t.lapse} toparlanma ${t.recover}`);
     out.push({ diff, mean: mean(lapAll), ...t });
   }
   return out;
 }
 
+const soloAll = [];
 for (const trackId of tracks) {
-  if (opt.mode === 'solo' || opt.mode === 'both') await soloBlock(trackId);
+  if (opt.mode === 'solo' || opt.mode === 'both') soloAll.push(...(await soloBlock(trackId)).map((r) => ({ ...r, trackId })));
   if (opt.mode === 'race' || opt.mode === 'both') await raceBlock(trackId);
+}
+if (soloAll.length && tracks.length * models.length > 1) {
+  console.log('\n=== SOLO ÖZET (pist·araç ortalaması; süre = ortTur / pist başına normal-zorluk ortTur) ===');
+  for (const diff of diffs) {
+    const rows = soloAll.filter((r) => r.diff === diff);
+    const ratios = rows.map((r) => {
+      const base = soloAll.find((q) => q.trackId === r.trackId && q.model === r.model && q.diff === (diffs.includes('normal') ? 'normal' : diffs[0]));
+      return r.mean / base.mean;
+    });
+    console.log(`${diff.padEnd(7)} süre oranı ${f2(mean(ratios))} toplam ${f1(rows.reduce((a, r) => a + r.mean, 0))}  duvar/tur ${f1(mean(rows.map((r) => r.wallPerLap)))}  sert ${rows.reduce((a, r) => a + r.wallHard, 0)}  wreck ${rows.reduce((a, r) => a + r.wrecks, 0)}  takılma ${rows.reduce((a, r) => a + r.stuck, 0)}  ters ${rows.reduce((a, r) => a + r.reverse, 0)}  us/adım ${f1(mean(rows.map((r) => r.us)))}`);
+  }
 }
