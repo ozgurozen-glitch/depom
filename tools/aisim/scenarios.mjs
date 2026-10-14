@@ -5,10 +5,10 @@ import { BotDriver } from '../../src/ai.js';
 import { CollisionSystem } from '../../src/collisions.js';
 import { getRacingLine } from '../../src/ai/racingLine.js';
 import { makeTrack } from './tracks.mjs';
-import { MODELS } from './sim.mjs';
+import { makeCarFactory } from './sim.mjs';
 
 const argv = process.argv.slice(2);
-const opt = { track: 'hard2', radius: '8', models: 'vortex,speedster,gripper', diff: 'easy,normal,hard' };
+const opt = { track: 'hard2', radius: '8', models: 'vortex,raijin,titan', diff: 'easy,normal,hard' };
 for (let i = 0; i < argv.length; i += 2) opt[argv[i].replace(/^--/, '')] = argv[i + 1];
 
 const DT = 1 / 60;
@@ -18,20 +18,12 @@ function check(name, ok, detail = '') {
   if (!ok) failures++;
 }
 
-const classes = new Map();
-async function carClass(model) {
-  if (!classes.has(model)) {
-    const tune = encodeURIComponent(JSON.stringify(MODELS[model] || {}));
-    classes.set(model, (await import(new URL(`../../src/car.js?tune=${tune}`, import.meta.url).href)).Car);
-  }
-  return classes.get(model);
-}
+const mkCar = makeCarFactory(false);
 
 async function setup(model, diff, trackId, radius) {
   const track = makeTrack(trackId, { radius: Number(radius) });
-  const Car = await carClass(model);
   const scene = new THREE.Scene();
-  const car = new Car({ scene, color: 0xff0000, name: 'T', isPlayer: false });
+  const car = mkCar(model, { scene, color: 0xff0000, name: 'T', isPlayer: false });
   const driver = new BotDriver(car, track, { skill: 0.9, aggression: 0.3, preferredLane: 0, difficulty: diff });
   return { track, car, driver, scene };
 }
@@ -127,8 +119,7 @@ console.log('\n# Shockwave (zor): bar dolu, düzlükte 50-70 m önde rakip');
 for (const model of models) {
   const diff = 'hard';
   const env = await setup(model, diff, 'oval', 8);
-  const Car = await carClass(model);
-  const rival = new Car({ scene: env.scene, color: 0x00ff00, name: 'R', isPlayer: false });
+  const rival = mkCar(model, { scene: env.scene, color: 0x00ff00, name: 'R', isPlayer: false });
   place(env.track, env.car, 200, 0, 0, 55);
   place(env.track, rival, 270, 0, 0, 45);
   env.car.nitro = 1;
@@ -151,12 +142,11 @@ for (const model of models) {
 }
 
 console.log('\n# Savunma + sollama: uzun düzlükte yavaş öndeki (zor) ve arkadan yaklaşan hızlı araba (mixed pisti)');
-for (const [lm, fm] of [['gripper', 'speedster'], ['vortex', 'speedster'], ['gripper', 'vortex']]) {
+for (const [lm, fm] of [['titan', 'raijin'], ['vortex', 'raijin'], ['titan', 'vortex']]) {
   const track = makeTrack('mixed');
   const scene = new THREE.Scene();
   const mk = async (model, name, diff, skill) => {
-    const Car = await carClass(model);
-    const car = new Car({ scene, color: 0xff0000, name, isPlayer: false });
+    const car = mkCar(model, { scene, color: 0xff0000, name, isPlayer: false });
     const driver = new BotDriver(car, track, { skill, aggression: 0.1, preferredLane: 0, difficulty: diff });
     return { car, driver };
   };

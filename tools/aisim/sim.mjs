@@ -10,27 +10,22 @@ import { getRacingLine } from '../../src/ai/racingLine.js';
 const DT = 1 / 60;
 const KMH = 1 / 3.6;
 
-// Araç modelleri: CAR_TUNING üzerine yazılan alanlar (hız m/s).
-export const MODELS = {
-  vortex: {},
-  speedster: { maxSpeed: 310 * KMH, accel: 13.0, yawRateHigh: 0.95, yawRateLow: 2.0, gripHigh: 7.0, gripLow: 13 },
-  gripper: { maxSpeed: 262 * KMH, accel: 12.6, yawRateHigh: 1.25, yawRateLow: 2.4, gripHigh: 10.5, gripLow: 17, minTurnRadius: 5.8 },
-};
-
-const carClasses = new Map();
+// Araç modelleri: oyunun gerçek araç kataloğu (src/cars.js); her model src/car.js ile spec olarak kurulur.
+import { Car } from '../../src/car.js';
+import { CARS } from '../../src/cars.js';
+export const MODELS = Object.fromEntries(CARS.map((c) => [c.id, c]));
 let coldCounter = 0;
-/** cold: her çağrıda yeni sınıf (→ yeni öğrenilmiş araç modeli): "soğuk başlangıç" ölçümleri için. */
-async function carClass(model, cold = false) {
-  const key = cold ? `${model}#${++coldCounter}` : model;
-  let cls = carClasses.get(key);
-  if (!cls) {
-    const tune = encodeURIComponent(JSON.stringify(MODELS[model] || {}));
-    const q = cold ? `r=${coldCounter}&tune=${tune}` : `tune=${tune}`;
-    const mod = await import(new URL(`../../src/car.js?${q}`, import.meta.url).href);
-    cls = mod.Car;
-    carClasses.set(key, cls);
-  }
-  return cls;
+/** [Car, spec] — cold: spec kopyalanır (→ yeni öğrenilmiş araç modeli; "soğuk başlangıç" ölçümleri için). */
+export function makeCarFactory(cold) {
+  const specs = new Map();
+  return (model, extra) => {
+    let spec = specs.get(model);
+    if (!spec) {
+      spec = cold ? { ...MODELS[model], _cold: ++coldCounter } : MODELS[model];
+      specs.set(model, spec);
+    }
+    return new Car({ ...extra, spec });
+  };
 }
 
 const DIFF_SHIFT = { easy: -0.14, normal: 0, hard: 0.06 }; // game.js DIFFICULTIES ile aynı
@@ -53,33 +48,26 @@ export function botOptions(i, count, difficulty) {
 export async function runRace(opts) {
   const {
     track: trackId = 'oval', trackOpts = {}, laps = 2, difficulty = 'normal', bots = 7,
-    models = ['vortex'], playerModel = 'vortex', player: playerMode = 'normal', solo = false,
+    models = ['raijin', 'titan', 'vortex'], playerModel = 'vortex', player: playerMode = 'normal', solo = false,
     maxTime = 0, verbose = false,
   } = opts;
-  const track = trackId === 'riviera' ? await makeRealTrack() : makeTrack(trackId, trackOpts);
+  const track = trackId === 'riviera' || trackId === 'bangkok' ? await makeRealTrack(trackId) : makeTrack(trackId, trackOpts);
   const L = track.length;
   const scene = new THREE.Scene();
   const collisions = new CollisionSystem();
 
-  const raceClasses = new Map();
-  const raceClass = async (m) => {
-    if (!opts.cold) return carClass(m);
-    if (!raceClasses.has(m)) raceClasses.set(m, await carClass(m, true));
-    return raceClasses.get(m);
-  };
+  const mkCar = makeCarFactory(opts.cold === true);
   const entries = []; // { car, driver, model, idx, m }
   const nBots = solo ? 1 : bots;
   for (let i = 0; i < nBots; i++) {
     const model = models[i % models.length];
-    const Car = await raceClass(model);
-    const car = new Car({ scene, color: 0xff0000, name: `B${i}`, isPlayer: false });
+    const car = mkCar(model, { scene, color: 0xff0000, name: `B${i}`, isPlayer: false });
     const driver = new BotDriver(car, track, botOptions(solo ? (opts.botIndex ?? 0) : i, solo ? 7 : bots, difficulty));
     entries.push({ car, driver, model, bot: true, name: `B${i}:${model}` });
   }
   let playerEntry = null;
   if (!solo && playerMode !== 'none') {
-    const Car = await raceClass(playerModel);
-    const car = new Car({ scene, color: 0x1677ff, name: 'SEN', isPlayer: true });
+    const car = mkCar(playerModel, { scene, color: 0x1677ff, name: 'SEN', isPlayer: true });
     const driver = new BotDriver(car, track, playerMode === 'same'
       ? { skill: 0.9, aggression: 0.5, preferredLane: 0, difficulty }
       : { skill: 0.9, aggression: 0.5, preferredLane: 0 });

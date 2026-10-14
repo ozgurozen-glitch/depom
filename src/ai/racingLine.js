@@ -11,6 +11,8 @@ const SPACING = 2; // m, örnek aralığı
 const EDGE_MARGIN = 3.0; // m, çizginin araç merkezi için kenar payı (viraj çıkışında dışa savrulma payı dahil)
 const CURV_HALF_SPAN = 3; // örnek; eğrilik ±6 m'lik üç nokta çemberinden
 const CURV_SMOOTH = 3; // örnek; eğrilik kutu filtresi yarı genişliği
+const SWING_WINDOW = 40; // m
+const SWING_MAX = 0.02; // 1/m: daha sıkı (R < ~100 m) ters virajlarda normal viraj hızı sınırı zaten belirleyici
 const AHEAD_WINDOW = 200; // m, ileriye bakan en büyük eğrilik penceresi
 
 const cache = new WeakMap();
@@ -43,7 +45,8 @@ export class RacingLine {
     this.halfW = new Float64Array(n); // yol yarı genişliği
     this.off = new Float64Array(n); // yarış çizgisinin yanal ofseti
     this.kappa = new Float64Array(n); // çizginin işaretli eğriliği (1/m), + sağa dönüş
-    this.kAhead = new Float64Array(n); // önümüzdeki AHEAD_WINDOW metrede en büyük |eğrilik|
+    this.kAhead = new Float64Array(n);
+    this.kSwing = new Float64Array(n); // yön değiştiren (S) virajlarda ±SWING_WINDOW içindeki eğrilik farkı (1/m), aksi halde 0 // önümüzdeki AHEAD_WINDOW metrede en büyük |eğrilik|
 
     const defaultWidth = Number.isFinite(track.width) ? track.width : 20;
     for (let i = 0; i < n; i++) {
@@ -71,6 +74,7 @@ export class RacingLine {
     this.solveOffsets();
     this.computeCurvature();
     this.computeAheadMax();
+    this.computeSwing();
 
     this.ramps = Array.isArray(track.ramps)
       ? track.ramps.filter((r) => r && Number.isFinite(r.s0) && Number.isFinite(r.s1)).slice().sort((a, b) => a.s0 - b.s0)
@@ -144,6 +148,23 @@ export class RacingLine {
     }
   }
 
+  // S virajlar: pencerede hem sağa hem sola dönüş varsa (maks κ - min κ). Yaw oranının ters dönmesi gerektiğinden
+  // salt |κ|'dan çok daha zordur; hız planı bunu ayrıca sınırlar.
+  computeSwing() {
+    const { n, kappa, kSwing, ds } = this;
+    const w = Math.max(1, Math.round(SWING_WINDOW / ds));
+    for (let i = 0; i < n; i++) {
+      let mx = -1e9;
+      let mn = 1e9;
+      for (let j = -w; j <= w; j++) {
+        const k = kappa[(i + j + n) % n];
+        if (k > mx) mx = k;
+        if (k < mn) mn = k;
+      }
+      kSwing[i] = mx > 4e-4 && mn < -4e-4 && mx - mn < SWING_MAX ? mx - mn : 0;
+    }
+  }
+
   computeAheadMax() {
     const { n, kappa, kAhead } = this;
     const win = Math.min(n, Math.max(1, Math.round(AHEAD_WINDOW / this.ds)));
@@ -155,6 +176,12 @@ export class RacingLine {
       }
       kAhead[i] = m;
     }
+  }
+
+  swingAtIndex(i) {
+    let k = i % this.n;
+    if (k < 0) k += this.n;
+    return this.kSwing[k];
   }
 
   /** s'yi [0, n) kesirli örnek indeksine çevirir. */

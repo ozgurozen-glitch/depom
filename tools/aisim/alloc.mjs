@@ -3,14 +3,13 @@
 import * as THREE from 'three';
 import { BotDriver } from '../../src/ai.js';
 import { makeTrack } from './tracks.mjs';
-import { MODELS } from './sim.mjs';
+import { makeCarFactory } from './sim.mjs';
 
 const track = makeTrack('mixed');
-const tune = encodeURIComponent(JSON.stringify(MODELS.vortex));
-const { Car } = await import(new URL(`../../src/car.js?tune=${tune}`, import.meta.url).href);
+const mkCar = makeCarFactory(false);
 const scene = new THREE.Scene();
 const mk = (name, s, lat) => {
-  const car = new Car({ scene, color: 0xff0000, name, isPlayer: false });
+  const car = mkCar('vortex', { scene, color: 0xff0000, name, isPlayer: false });
   const smp = track.sample(s);
   car.placeAt(smp.pos.clone().addScaledVector(smp.right, lat), Math.atan2(smp.tangent.x, smp.tangent.z));
   car.applyImpulse(new THREE.Vector3(smp.tangent.x, 0, smp.tangent.z).multiplyScalar(60));

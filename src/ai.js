@@ -23,6 +23,7 @@ export const TUNING = {
   slopeK: 4, // hedef yanal eğim sınırı = slopeK / hız (m/s) → yüksek hızda yola göre en çok ~5° sapma
   slopeMin: 0.07,
   slopeMax: 0.3,
+  swingOmega: 0.6, // rad/s: S virajda (ters yönlü eğrilik) hız · eğrilik farkı üst sınırı
   capUnknown: 0.88, // gözlem yokken kapasite payı çarpanı (gözlem arttıkça 1'e yaklaşır)
   steerSlew: 8, // 1/s, direksiyon çıkışının en hızlı değişimi
   steerFilterTau: 0.1, // s, arabaya uygulanan direksiyonun tahmini (öğrenme için)
@@ -31,7 +32,10 @@ export const TUNING = {
   cornerLane: 0, // viraj içinde şerit tercihinin payı (0 = yalnızca düzlükte)
   laneBias: 3, // m, preferredLane = ±1 düzlükte bu kadar yana kayar
   avoidBehind: 4.5, // m, arkada kalmış ama yanımızdaki arabayı da say
-  tightCorner: 1 / 70, // 90 m içinde bu eğrilikten sıkı viraj varsa öndekiyle mesafe koru
+  followBrakeLead: 1, // s: öndeki yavaşlıyorsa hedef hızdan (yavaşlama · bu süre) düş
+  followGap: 10, // m: slipstream takibinde öndekiyle hedef mesafe
+  cornerGap: 20, // m: sıkı viraj girişinde öndekiyle hedef mesafe
+  tightCorner: 0.004, // 90 m içinde bu eğrilikten sıkı viraj varsa öndekiyle mesafe koru
   alongside: 5, // m: bundan az önde (ya da arkada) olan araba 'yanımızda' sayılır
   avoidLatRate: 3.2, // m/s, kaçış sırasında varsayılan yanal hız (temas zamanı tahmini için)
   avoidLatLead: 0.5, // s, komşu arabanın yanal hızı bu süre kadar öne taşınır
@@ -79,7 +83,7 @@ export class BotDriver {
   constructor(car, track, { skill = 0.8, aggression = 0.5, preferredLane = 0, difficulty = 'normal' } = {}) {
     this.car = car;
     this.track = track;
-    this.difficulty = PROFILES[difficulty] ? difficulty : 'normal';
+    this.difficulty = car.isPlayer ? 'player' : PROFILES[difficulty] ? difficulty : 'normal';
     const P = getProfile(this.difficulty);
     this.profile = P;
     this.skill = clamp(Number.isFinite(skill) ? skill : 0.8, 0, 1);
@@ -163,6 +167,8 @@ export class BotDriver {
     this.otCooldown = 1 + this.rng() * 2;
     this.otFollowSpeed = Infinity;
     this.otSeen = null;
+    this.otPrevSpeed = 0;
+    this.otAcc = 0;
     this.otAccept = false;
     this.otCheck = 0;
 
@@ -298,8 +304,9 @@ export class BotDriver {
     const kNear = this.maxCurvature(s, 90);
     this.updateLapse(dt, kNear);
 
-    const aLat = this.latAccel * (1 + 0.08 * boost - 0.14 * slow);
-    const capMargin = Math.min(0.97, this.capMargin + 0.04 * boost - 0.08 * slow);
+    const amp = P.rubberAmp || 1;
+    const aLat = this.latAccel * (1 + 0.08 * amp * boost - 0.14 * slow);
+    const capMargin = Math.min(0.99, this.capMargin + 0.04 * amp * boost - 0.08 * slow);
     this.aLatNow = aLat;
     this.capNow = capMargin;
 
@@ -634,10 +641,15 @@ export class BotDriver {
       const k = line.absCurvatureAtIndex(i0 + j);
       if (k < 2e-4) continue;
       // aynı eğrilik için tekrar hesaplama
-      const vc = Math.abs(k - lastK) < 1e-5 ? lastVc : this.cornerSpeed(k, aLat, capMargin);
+      let vc = Math.abs(k - lastK) < 1e-5 ? lastVc : this.cornerSpeed(k, aLat, capMargin);
       lastK = k;
       lastVc = vc;
       const d = Math.max(0, j * line.ds - lead);
+      const sw = line.swingAtIndex(i0 + j);
+      if (sw > 0) {
+        const vs = TUNING.swingOmega / sw; // S viraj: yaw oranı ters dönecek
+        if (vs < vc) vc = vs;
+      }
       const vAllowed = Math.sqrt(vc * vc + 2 * aBrake * d);
       if (vAllowed < vT) vT = vAllowed;
     }
@@ -744,7 +756,7 @@ export class BotDriver {
       if (Math.abs(dLat) > 10) continue;
       const owner = attackClaims.get(c);
       if (owner && owner !== this && owner.attackTarget === c) continue;
-      const weight = c === ctx.player ? 1 : car.isPlayer ? 0.7 : 0.35;
+      const weight = c === ctx.player ? 1 : car.isPlayer ? 0.7 : P.botTarget;
       let score = weight * (1 - Math.abs(ds) / 40);
       if (P.attackNeedsPin) {
         // akıllı saldırı: duvara yakın (sıkıştırılabilir) kurbanlara öncelik ver
@@ -815,7 +827,11 @@ export class BotDriver {
           return;
         }
         this.otLat = clamp(v.lateral, -lim, lim);
-        this.otFollowSpeed = v.speed + clamp((ds - 7) * 0.9, -4, 14) + 2;
+        // öndeki sertçe yavaşlıyorsa (viraj freni) tepki gecikmemizi kapatmak için ek pay bırak
+      const acc = (v.speed - this.otPrevSpeed) / dt;
+      this.otPrevSpeed = v.speed;
+      this.otAcc += (acc - this.otAcc) * 0.2;
+      this.otFollowSpeed = v.speed + clamp((ds - TUNING.followGap) * 0.9, -6, 14) + 1 + Math.min(0, this.otAcc) * TUNING.followBrakeLead;
         const straight = kNear < 1 / 110;
         const swingDist = clamp(9 + closing * 1.0, 11, 26);
         if (straight && ((ds <= swingDist && closing > 0.8) || ds <= 11 || (closing > 7 && ds < 26))
@@ -875,6 +891,8 @@ export class BotDriver {
     this.otSide = 0;
     this.otLat = best.lateral;
     this.otFollowSpeed = best.speed + 6;
+    this.otPrevSpeed = best.speed;
+    this.otAcc = 0;
     this.stats.follow++;
   }
 
@@ -1024,8 +1042,8 @@ export class BotDriver {
       if (!(ds >= -TUNING.avoidBehind)) continue; // arka tamponu hâlâ yanımızdaysa say
       const wrecked = c.wrecked;
       // sıkı viraj girişinde öndekiyle mesafeyi koru (yan yana sıkışıp dönüşte çarpışmayı azaltır)
-      if (tight && ds >= 5 && ds <= 26 && !wrecked && c.ghost !== true && Math.abs(c.lateral - lat) < 4.5) {
-        const cs = c.speed - 0.5 + (ds - 9) * 0.5;
+      if (tight && ds >= 5 && ds <= TUNING.cornerGap + 17 && !wrecked && c.ghost !== true && Math.abs(c.lateral - lat) < 4.5) {
+        const cs = c.speed - 0.5 + (ds - TUNING.cornerGap) * 0.5;
         if (cs < cornerFollow) cornerFollow = cs;
       }
       if (ds < TUNING.alongside) {
@@ -1254,6 +1272,9 @@ export class BotDriver {
       // inişte duvara ya da yol dışına düşecekse girme
       const landing = takeLat + drift;
       if (take && (lo > hi || Math.abs(landing) > lim + 0.2) && (okL || okR)) take = false;
+      // havada fren yapılamaz: iniş sonrası fren noktası uçuşun bitiminden önce gelmesin (ör. inişte sıkı viraj)
+      if (take && (okL || okR)
+        && this.brakeFreeDistance(ramp.s0, v * 1.05, this.aLatNow, this.capNow) < ramp.s1 - ramp.s0 + dist + 30) take = false;
       if (!take && !okL && !okR) take = true; // kaçınacak yer yok
       this.rampTake = take;
       if (!take) {

@@ -8,9 +8,9 @@ for (let i = 0; i < argv.length; i += 2) opt[argv[i].replace(/^--/, '')] = argv[
 
 const q = (a, p) => a[Math.min(a.length - 1, Math.floor(a.length * p))];
 // ısınma: kısa bir yarış
-await runRace({ track: opt.track, laps: 1, difficulty: 'hard', models: ['vortex', 'speedster', 'gripper'] });
+await runRace({ track: opt.track, laps: 1, difficulty: 'hard', models: ['vortex', 'raijin', 'titan'] });
 for (const diff of ['easy', 'normal', 'hard']) {
-  const res = await runRace({ track: opt.track, laps: Number(opt.laps), difficulty: diff, models: ['vortex', 'speedster', 'gripper'] });
+  const res = await runRace({ track: opt.track, laps: Number(opt.laps), difficulty: diff, models: ['vortex', 'raijin', 'titan'] });
   const us = [];
   for (const e of res.entries) if (e.m.callUs) for (const u of e.m.callUs) us.push(u);
   us.sort((a, b) => a - b);
