@@ -1,7 +1,8 @@
 // Controls: klavye + gamepad + dokunmatik giriş.
 //
-// Gaz otomatiktir (fren basılı değilken throttle = 1). Fren tuşu aynı zamanda drift tuşudur:
-// Car, direksiyonla birlikte ve yeterli hızda basılırsa drift'e girer, yoksa fren yapar.
+// Gaz MANUELDİR: ↑/W gaz, ↓/S fren (durunca geri vites), Space el freni/drift (frenden ayrı; direksiyonla
+// birlikte yeterli hızda basılırsa drift'e girer), Shift/N nitro, C kamera, P/Esc duraklat, R yeniden başlat.
+// Gamepad: RT gaz (analog), LT fren, A nitro, B/X drift. Dokunmatik: ◀ ▶, GAZ ve FREN pedalları, NITRO, DRIFT.
 // Nitro basma kenarlarını Car algılar; burada yalnızca "basılı mı" bilgisi verilir.
 const STEER_RAMP_TIME = 0.1; // dijital direksiyonun tam sapmaya varış süresi (s)
 const STEER_RETURN_RATE = 1 / 0.07; // bırakınca merkeze dönüş
@@ -12,19 +13,22 @@ const TRIGGER_THRESHOLD = 0.35;
 const KEYS = {
   left: ['ArrowLeft', 'KeyA'],
   right: ['ArrowRight', 'KeyD'],
-  brake: ['ArrowDown', 'KeyS', 'Space'],
-  nitro: ['ArrowUp', 'KeyW', 'ShiftLeft', 'ShiftRight', 'KeyN'],
+  throttle: ['ArrowUp', 'KeyW'],
+  brake: ['ArrowDown', 'KeyS'],
+  drift: ['Space'],
+  nitro: ['ShiftLeft', 'ShiftRight', 'KeyN'],
   pause: ['Escape', 'KeyP'],
   restart: ['KeyR'],
   camera: ['KeyC'],
 };
-const GAME_KEYS = new Set([...KEYS.left, ...KEYS.right, ...KEYS.brake, ...KEYS.nitro]);
+const GAME_KEYS = new Set([...KEYS.left, ...KEYS.right, ...KEYS.throttle, ...KEYS.brake, ...KEYS.drift, ...KEYS.nitro]);
 
 const STYLE_ID = 'touch-controls-style';
 const STYLE = `
 .tc-root { position: absolute; inset: 0; pointer-events: none; display: none;
-  --tc-steer: clamp(76px, 11vmin + 34px, 118px); --tc-nitro: clamp(92px, 13vmin + 40px, 136px);
-  --tc-drift: clamp(72px, 9vmin + 34px, 104px); --tc-gap: clamp(10px, 2vmin, 18px);
+  --tc-steer: clamp(70px, 10vmin + 30px, 112px); --tc-nitro: clamp(62px, 9vmin + 28px, 96px);
+  --tc-drift: clamp(58px, 7vmin + 30px, 88px); --tc-gap: clamp(8px, 1.6vmin, 14px);
+  --tc-pedal: clamp(64px, 8vmin + 34px, 96px); --tc-redge: max(14px, env(safe-area-inset-right));
   --tc-edge: max(14px, env(safe-area-inset-left)); --tc-bottom: max(16px, env(safe-area-inset-bottom)); }
 .tc-root.tc-visible { display: block; }
 .tc-btn { position: absolute; box-sizing: border-box; display: flex; align-items: center; justify-content: center;
@@ -41,17 +45,26 @@ const STYLE = `
 .tc-right { left: calc(var(--tc-edge) + 6px + var(--tc-steer) + var(--tc-gap)); }
 .tc-steer.tc-pressed { background: rgba(255,255,255,0.32); border-color: #fff; transform: skewX(-12deg) scale(0.95); }
 .tc-round { border-radius: 50%; flex-direction: column; gap: 3px; }
-.tc-nitro { right: max(18px, env(safe-area-inset-right)); bottom: calc(var(--tc-bottom) + 6px);
-  width: var(--tc-nitro); height: var(--tc-nitro); font-size: clamp(14px, 1.6vmin + 8px, 19px);
+.tc-pedal { right: calc(var(--tc-redge)); bottom: var(--tc-bottom); width: var(--tc-pedal); height: calc(var(--tc-pedal) * 1.55);
+  border-radius: 20px 20px 14px 14px; flex-direction: column; gap: 6px; font-size: clamp(12px, 1.4vmin + 7px, 17px);
+  background: linear-gradient(180deg, rgba(60,220,110,0.5), rgba(10,120,60,0.38)); border: 3px solid rgba(130,255,170,0.85);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3), inset 0 0 14px rgba(120,255,170,0.25); }
+.tc-pedal svg { width: 34%; height: auto; fill: #eafff1; }
+.tc-pedal.tc-pressed { transform: scale(0.95); background: linear-gradient(180deg, rgba(130,255,170,0.75), rgba(30,180,90,0.6)); }
+.tc-brake { right: calc(var(--tc-redge) + var(--tc-pedal) + var(--tc-gap)); width: calc(var(--tc-pedal) * 0.86); height: calc(var(--tc-pedal) * 1.12);
+  background: linear-gradient(180deg, rgba(255,90,90,0.5), rgba(150,20,30,0.4)); border-color: rgba(255,140,140,0.85);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3), inset 0 0 14px rgba(255,120,120,0.25); }
+.tc-brake.tc-pressed { background: linear-gradient(180deg, rgba(255,150,150,0.75), rgba(210,50,60,0.6)); }
+.tc-nitro { right: calc(var(--tc-redge) + var(--tc-pedal) * 1.86 + var(--tc-gap) * 2); bottom: calc(var(--tc-bottom) + 4px);
+  width: var(--tc-nitro); height: var(--tc-nitro); font-size: clamp(12px, 1.3vmin + 7px, 17px);
   background: radial-gradient(circle at 50% 38%, rgba(70,235,255,0.55), rgba(0,150,200,0.32) 62%, rgba(0,60,90,0.3));
   border: 3px solid rgba(110,240,255,0.85); box-shadow: 0 0 18px rgba(0,220,255,0.45), inset 0 0 16px rgba(0,220,255,0.3); }
 .tc-nitro.tc-pressed { transform: scale(0.93); background: radial-gradient(circle, rgba(160,250,255,0.8), rgba(0,190,240,0.55));
   box-shadow: 0 0 30px rgba(0,230,255,0.85), inset 0 0 20px rgba(255,255,255,0.4); }
-.tc-nitro svg { width: 30%; height: 30%; fill: #eaffff; }
-.tc-drift { right: calc(max(18px, env(safe-area-inset-right)) + var(--tc-nitro) + var(--tc-gap));
-  bottom: calc(var(--tc-bottom) + 2px); width: var(--tc-drift); height: var(--tc-drift); font-size: clamp(11px, 1.2vmin + 7px, 15px);
+.tc-nitro svg { width: 30%; height: 30%; fill: #eafff1; }
+.tc-drift { right: calc(var(--tc-redge) + var(--tc-pedal) * 1.86 + var(--tc-gap) * 3 + var(--tc-nitro));
+  bottom: calc(var(--tc-bottom) + 2px); width: var(--tc-drift); height: var(--tc-drift); font-size: clamp(11px, 1.2vmin + 6px, 15px);
   background: rgba(12,16,26,0.38); border: 2px solid rgba(255,190,90,0.75); box-shadow: 0 4px 16px rgba(0,0,0,0.25); }
-.tc-drift small { font-size: 0.72em; opacity: 0.8; letter-spacing: 0.06em; }
 .tc-drift.tc-pressed { transform: scale(0.93); background: rgba(255,170,60,0.4); border-color: #ffd28a; }
 .tc-pause, .tc-camera { top: max(8px, env(safe-area-inset-top)); width: 48px; height: 48px;
   border-radius: 12px; background: rgba(12,16,26,0.45); border: 2px solid rgba(255,255,255,0.5); font-size: 18px; letter-spacing: 0; }
@@ -59,11 +72,19 @@ const STYLE = `
 .tc-camera { right: calc(max(8px, env(safe-area-inset-right)) + 48px + 8px); }
 .tc-camera svg { width: 24px; height: 24px; fill: rgba(255,255,255,0.92); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
 .tc-pause.tc-pressed, .tc-camera.tc-pressed { background: rgba(255,255,255,0.35); }
-@media (max-height: 420px) { .tc-root { --tc-steer: 78px; --tc-nitro: 96px; --tc-drift: 74px; } }
+@media (max-height: 420px) { .tc-root { --tc-steer: 72px; --tc-nitro: 66px; --tc-drift: 60px; --tc-pedal: 68px; } }
+/* Dikey: nitro ve drift pedalların üstünde (iki sıra), ekranın alt-ortasındaki hız göstergesine binmesin */
+@media (orientation: portrait) {
+  .tc-root { --tc-lift: 0px; }
+  .tc-nitro { right: var(--tc-redge); bottom: calc(var(--tc-bottom) + var(--tc-pedal) * 1.55 + var(--tc-gap)); }
+  .tc-drift { right: calc(var(--tc-redge) + var(--tc-nitro) + var(--tc-gap)); bottom: calc(var(--tc-bottom) + var(--tc-pedal) * 1.55 + var(--tc-gap)); }
+}
 `;
 
 const ARROW_LEFT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.5 3.5 6 12l10.5 8.5z"/></svg>';
 const ARROW_RIGHT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 3.5 18 12 7.5 20.5z"/></svg>';
+const CHEVRON_UP = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 15h6v6h6v-6h6z"/></svg>';
+const CHEVRON_DOWN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21 3 9h6V3h6v6h6z"/></svg>';
 const BOLT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 1 4 14h6.5L9 23l11-14h-7z"/></svg>';
 // Kamera gövdesi + mercek (evenodd ile delik): görünüm değiştirme düğmesi.
 const CAMERA_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M4 7h3.2l1.6-2.4h6.4L16.8 7H20a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 20 19H4a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 4 7zm8 2.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 1 0 0-6.8z"/></svg>';
@@ -80,15 +101,15 @@ export class Controls {
 
     this.steer = 0; // yumuşatılmış dijital direksiyon
     this.lastSteerTime = null;
-    this.input = { throttle: 1, brake: 0, steer: 0, nitro: false, drift: false };
+    this.input = { throttle: 0, brake: 0, steer: 0, nitro: false, drift: false };
 
     // Dokunmatik
     this.touchVisible = false;
-    this.pointers = new Map(); // pointerId → 'left' | 'right' | 'nitro' | 'drift'
+    this.pointers = new Map(); // pointerId → 'left' | 'right' | 'gas' | 'brake' | 'nitro' | 'drift'
     this.buttons = {};
 
     // Gamepad
-    this.pad = { steer: 0, brake: false, nitro: false, active: false };
+    this.pad = { steer: 0, throttle: 0, brake: false, nitro: false, drift: false, active: false };
     this.padPrev = { start: false, select: false, camera: false };
     this.padPolledAt = -1;
 
@@ -144,8 +165,10 @@ export class Controls {
     const pad = this.pad;
     pad.active = false;
     pad.steer = 0;
+    pad.throttle = 0;
     pad.brake = false;
     pad.nitro = false;
+    pad.drift = false;
     if (typeof navigator === 'undefined' || !navigator.getGamepads) return;
     let list;
     try {
@@ -166,8 +189,10 @@ export class Controls {
       if (b(14)) x = -1;
       if (b(15)) x = 1;
       if (x !== 0) pad.steer = x;
-      if (b(1) || b(6)) pad.brake = true; // B / LT
-      if (b(0) || b(7)) pad.nitro = true; // A / RT
+      if (gp.buttons[7]) pad.throttle = Math.max(pad.throttle, gp.buttons[7].pressed && !gp.buttons[7].value ? 1 : gp.buttons[7].value); // RT: analog gaz
+      if (b(6)) pad.brake = true; // LT: fren / geri
+      if (b(0)) pad.nitro = true; // A
+      if (b(1) || b(2)) pad.drift = true; // B / X: drift
       if (b(9)) start = true;
       if (b(8)) select = true;
       if (b(3)) camera = true; // Y / üçgen
@@ -205,15 +230,17 @@ export class Controls {
     let steer = this.steer;
     if (this.pad.active && this.pad.steer !== 0 && digital === 0) steer = this.pad.steer;
 
-    const brake = this.anyKey(KEYS.brake) || this.touchHas('drift') || this.pad.brake;
+    const gas = this.anyKey(KEYS.throttle) || this.touchHas('gas');
+    const brake = this.anyKey(KEYS.brake) || this.touchHas('brake') || this.pad.brake;
+    const drift = this.anyKey(KEYS.drift) || this.touchHas('drift') || this.pad.drift;
     const nitro = this.anyKey(KEYS.nitro) || this.touchHas('nitro') || this.pad.nitro;
 
     const out = this.input;
+    out.throttle = gas ? 1 : Math.max(0, Math.min(1, this.pad.throttle));
     out.brake = brake ? 1 : 0;
-    out.throttle = brake ? 0 : 1;
     out.steer = Math.max(-1, Math.min(1, steer));
     out.nitro = nitro;
-    out.drift = brake;
+    out.drift = drift;
     return out; // her çağrıda aynı nesne (çağıran hemen okur; saklamak isterse kopyalamalı)
   }
 
@@ -279,7 +306,9 @@ export class Controls {
     };
     make('left', 'tc-steer tc-left', ARROW_LEFT, 'Sola');
     make('right', 'tc-steer tc-right', ARROW_RIGHT, 'Sağa');
-    make('drift', 'tc-round tc-drift', '<span>DRIFT</span><small>FREN</small>', 'Drift / fren');
+    make('gas', 'tc-pedal tc-gas', `${CHEVRON_UP}<span>GAZ</span>`, 'Gaz');
+    make('brake', 'tc-pedal tc-brake', `${CHEVRON_DOWN}<span>FREN</span>`, 'Fren / geri');
+    make('drift', 'tc-round tc-drift', '<span>DRIFT</span>', 'Drift / el freni');
     make('nitro', 'tc-round tc-nitro', `${BOLT}<span>NITRO</span>`, 'Nitro');
     make('pause', 'tc-pause', 'II', 'Duraklat');
     make('camera', 'tc-camera', CAMERA_ICON, 'Kamera görünümü');
