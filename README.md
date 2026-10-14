@@ -17,17 +17,20 @@ Sonra tarayıcıda `http://localhost:3000` (ya da `:8000`) adresini aç.
 
 ## Kontroller
 
-| Eylem | Klavye | Dokunmatik |
-|---|---|---|
-| Direksiyon | ← → / A D | sol alttaki ◀ ▶ |
-| Fren / drift | ↓ / S / Space | DRIFT düğmesi |
-| Nitro | ↑ / W / Shift / N | NITRO düğmesi |
-| Shockwave nitro | bar doluyken nitroya çift bas | NITRO'ya çift dokun |
-| Kamera görünümü (takip/uzak/kaput/tampon) | C | sağ üstteki kamera düğmesi |
-| Duraklat | Esc / P | sağ üstteki II |
-| Yeniden başlat | R | duraklatma menüsü |
+| Eylem | Klavye | Gamepad | Dokunmatik |
+|---|---|---|---|
+| Gaz | ↑ / W | RT | sağ alttaki GAZ pedalı |
+| Fren / geri vites | ↓ / S | LT | FREN pedalı |
+| Drift (el freni) | Space | B veya X | DRIFT düğmesi |
+| Nitro | Shift / N | A | NITRO düğmesi |
+| Shockwave nitro | bar doluyken nitroya çift bas | | NITRO'ya çift dokun |
+| Direksiyon | ← → / A D | sol çubuk / d-pad | sol alttaki ◀ ▶ |
+| Kamera görünümü (takip/uzak/kaput/tampon) | C | Y | sağ üstteki kamera düğmesi |
+| Duraklat | Esc / P | Start | sağ üstteki II |
+| Yeniden başlat | R | Select | duraklatma menüsü |
+| Ses aç/kapat | M | | |
 
-Gaz otomatiktir. Drift, havada kalma, nitro tüpleri ve takedown'lar nitro barını doldurur.
+Gaz manueldir: hızlanmak için ↑ / W'ye basılı tut. Drift, havada kalma, nitro tüpleri ve takedown'lar nitro barını doldurur.
 Nitro patlamasının sonuna doğru tekrar basarsan **perfect nitro** zinciri başlar.
 
 ## Geliştirme
