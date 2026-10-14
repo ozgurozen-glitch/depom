@@ -23,6 +23,7 @@ export const TUNING = {
   slopeK: 4, // hedef yanal eğim sınırı = slopeK / hız (m/s) → yüksek hızda yola göre en çok ~5° sapma
   slopeMin: 0.07,
   slopeMax: 0.3,
+  swingOmega: 0.8, // rad/s: S virajda (ters yönlü eğrilik) hız · eğrilik farkı üst sınırı
   capUnknown: 0.88, // gözlem yokken kapasite payı çarpanı (gözlem arttıkça 1'e yaklaşır)
   steerSlew: 8, // 1/s, direksiyon çıkışının en hızlı değişimi
   steerFilterTau: 0.1, // s, arabaya uygulanan direksiyonun tahmini (öğrenme için)
@@ -79,7 +80,7 @@ export class BotDriver {
   constructor(car, track, { skill = 0.8, aggression = 0.5, preferredLane = 0, difficulty = 'normal' } = {}) {
     this.car = car;
     this.track = track;
-    this.difficulty = PROFILES[difficulty] ? difficulty : 'normal';
+    this.difficulty = car.isPlayer ? 'player' : PROFILES[difficulty] ? difficulty : 'normal';
     const P = getProfile(this.difficulty);
     this.profile = P;
     this.skill = clamp(Number.isFinite(skill) ? skill : 0.8, 0, 1);
@@ -298,8 +299,9 @@ export class BotDriver {
     const kNear = this.maxCurvature(s, 90);
     this.updateLapse(dt, kNear);
 
-    const aLat = this.latAccel * (1 + 0.08 * boost - 0.14 * slow);
-    const capMargin = Math.min(0.97, this.capMargin + 0.04 * boost - 0.08 * slow);
+    const amp = P.rubberAmp || 1;
+    const aLat = this.latAccel * (1 + 0.08 * amp * boost - 0.14 * slow);
+    const capMargin = Math.min(0.99, this.capMargin + 0.04 * amp * boost - 0.08 * slow);
     this.aLatNow = aLat;
     this.capNow = capMargin;
 
@@ -634,10 +636,15 @@ export class BotDriver {
       const k = line.absCurvatureAtIndex(i0 + j);
       if (k < 2e-4) continue;
       // aynı eğrilik için tekrar hesaplama
-      const vc = Math.abs(k - lastK) < 1e-5 ? lastVc : this.cornerSpeed(k, aLat, capMargin);
+      let vc = Math.abs(k - lastK) < 1e-5 ? lastVc : this.cornerSpeed(k, aLat, capMargin);
       lastK = k;
       lastVc = vc;
       const d = Math.max(0, j * line.ds - lead);
+      const sw = line.swingAtIndex(i0 + j);
+      if (sw > 0) {
+        const vs = TUNING.swingOmega / sw; // S viraj: yaw oranı ters dönecek
+        if (vs < vc) vc = vs;
+      }
       const vAllowed = Math.sqrt(vc * vc + 2 * aBrake * d);
       if (vAllowed < vT) vT = vAllowed;
     }
@@ -1254,6 +1261,9 @@ export class BotDriver {
       // inişte duvara ya da yol dışına düşecekse girme
       const landing = takeLat + drift;
       if (take && (lo > hi || Math.abs(landing) > lim + 0.2) && (okL || okR)) take = false;
+      // havada fren yapılamaz: iniş sonrası fren noktası uçuşun bitiminden önce gelmesin (ör. inişte sıkı viraj)
+      if (take && (okL || okR)
+        && this.brakeFreeDistance(ramp.s0, v * 1.05, this.aLatNow, this.capNow) < ramp.s1 - ramp.s0 + dist + 30) take = false;
       if (!take && !okL && !okR) take = true; // kaçınacak yer yok
       this.rampTake = take;
       if (!take) {

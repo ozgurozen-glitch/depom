@@ -10,7 +10,7 @@ import { PROFILES } from '../../src/ai/profile.js';
 import { TUNING } from '../../src/ai.js';
 import { TRACK_IDS } from './tracks.mjs';
 
-const opt = { cold: '0', set: '', tune: '', mode: 'both', track: 'oval,hard', difficulty: 'easy,normal,hard', laps: '2', models: 'vortex,speedster,gripper', bots: '7', radius: '', player: 'normal', botIndex: '0', reps: '1', json: false, maxTime: '0' };
+const opt = { cold: '0', set: '', tune: '', mode: 'both', track: 'oval,hard', difficulty: 'easy,normal,hard', laps: '2', models: 'vortex,raijin,titan', bots: '7', radius: '', player: 'normal', botIndex: '0', reps: '1', json: false, maxTime: '0' };
 const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i++) {
   const k = argv[i].replace(/^--/, '');
@@ -29,7 +29,7 @@ for (const kv of list0(opt.tune || '')) {
 }
 function list0(s) { return String(s).split(',').filter(Boolean); }
 const list = (s) => String(s).split(',').filter(Boolean);
-const tracks = opt.track === 'all' ? [...TRACK_IDS, 'riviera'] : list(opt.track);
+const tracks = opt.track === 'all' ? [...TRACK_IDS, 'riviera', 'bangkok'] : list(opt.track);
 const diffs = list(opt.difficulty);
 const models = list(opt.models);
 const laps = Number(opt.laps);

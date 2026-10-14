@@ -31,8 +31,12 @@ export function installFakeDom() {
 
 export async function makeRealTrack(id = 'riviera') {
   installFakeDom();
-  // Environment (sky bake) renderer gerektirir; yalnızca pist yeterli. Pist modülü `Track` sınıfını dışa aktarır.
+  // Environment (sky bake) renderer gerektirir; yalnızca pist yeterli.
+  const scene = new THREE.Scene();
+  if (id === 'bangkok') {
+    const { BangkokTrack } = await import('../../src/tracks/bangkok/track.js');
+    return new BangkokTrack(scene);
+  }
   const { Track } = await import('../../src/track.js');
-  void id;
-  return new Track(new THREE.Scene());
+  return new Track(scene);
 }

@@ -6,45 +6,108 @@
 
 export const PROFILES = {
   easy: {
-    // hız ve viraj
-    skillPull: 0, // etkin yetenek = lerp(skill, 1, skillPull)
-    speedRatio: [0.8, 0.9], // yetenek 0/1'de azami hızın oranı
-    latAccelMul: 0.85, // sabit yanal ivme tabanı çarpanı
-    capacityUse: [0.62, 0.7], // öğrenilen dönüş kapasitesinin kullanılan oranı (yetenek 0/1)
-    brakeMargin: 0.52, // fren yavaşlamasının planlamada kullanılan oranı (düşük = erken fren)
-    brakeReaction: 0.32, // s, fren tepki gecikmesi eklentisi
-    lineFollow: [0.45, 0.75], // yarış çizgisini izleme oranı (düşük = daha az kesme)
-    wanderMul: 1.9,
-    steerNoiseMul: 1.9,
-    // hatalar
-    lapseRate: 1 / 14, // 1/s
-    lapseDur: [0.7, 1.5],
-    // takedown / savunma / sollama
-    startCalm: 25, // s: yarış başı sakinliği (saldırı/sollama/savunma yok)
-    attackMul: 0.25,
+    skillPull: 0,
+    speedRatio: [0.88, 1.0],
+    latAccelMul: 1.0,
+    capacityUse: [0.78, 0.92],
+    brakeMargin: 0.75,
+    brakeReaction: 0,
+    lineFollow: [0.55, 1.0],
+    wanderMul: 1.0,
+    steerNoiseMul: 1.0,
+    lapseRate: 1 / 60,
+    lapseDur: [0.6, 1.0],
+    startCalm: 25,
+    attackMul: 0.5,
     attackNeedsPin: false,
-    defend: 0,
-    slip: 0.25, // slipstream için bilinçli arkaya girme olasılığı
-    swingSpeed: 0.8,
-    // nitro
-    nitroThreshold: 0.55, // bar bunun üstündeyse kullan
-    nitroNeed: [1.0, 40], // en az (a·v + b) m serbest mesafe (yalnızca zeki mod)
+    defend: 0.3,
+    slip: 0.6,
+    swingSpeed: 1.0,
+    nitroThreshold: 0.3,
+    nitroNeed: [1.0, 60],
     nitroSmart: false,
-    nitroChain: 0.25, // perfect zincirini deneme olasılığı
-    nitroChainAim: [0.55, 1.05], // basış zamanı aralığı (ilerleme)
+    nitroChain: 1,
+    nitroChainAim: [0.77, 0.86],
     shock: 0,
-    pickup: 0.15, // nitro pickup'ına yönelme olasılığı
-    rampMul: 0.3, // rampaya girme olasılığı çarpanı
-    // lastik bant
-    rubberBehind: [120, 150],
-    rubberAhead: [180, 200],
-    rubberBoostMul: 0.6,
-    rubberSlowMul: 1.4,
-    nitroRubber: 0.3, // oyuncunun bu kadar (0..1) önündeysek nitro kullanma
-    // drift
-    avoidMargin: 1.4,
+    pickup: 0.4,
+    rampMul: 1,
+    rubberBehind: [150, 150],
+    rubberAhead: [250, 200],
+    rubberBoostMul: 1.0,
+    rubberSlowMul: 1.0,
+    nitroRubber: 0.3,
+    avoidMargin: 0.9,
   },
+
   normal: {
+    skillPull: 0.5,
+    speedRatio: [0.94, 1.0],
+    latAccelMul: 1.5,
+    capacityUse: [0.88, 0.96],
+    brakeMargin: 0.9,
+    brakeReaction: -0.05,
+    lineFollow: [0.8, 1.0],
+    wanderMul: 0.5,
+    steerNoiseMul: 0.6,
+    lapseRate: 0,
+    lapseDur: [0.6, 1.0],
+    startCalm: 15,
+    attackMul: 1.4,
+    attackNeedsPin: false,
+    defend: 0.8,
+    slip: 0.9,
+    swingSpeed: 1.1,
+    nitroThreshold: 0.15,
+    nitroNeed: [0.6, 20],
+    nitroSmart: true,
+    nitroChain: 1,
+    nitroChainAim: [0.775, 0.84],
+    shock: 0.5,
+    pickup: 0.9,
+    rampMul: 1.2,
+    rubberBehind: [150, 150],
+    rubberAhead: [320, 220],
+    rubberBoostMul: 1.0,
+    rubberSlowMul: 0.5,
+    nitroRubber: 0.8,
+    avoidMargin: 0.9,
+  },
+  hard: {
+    skillPull: 1,
+    speedRatio: [1, 1],
+    latAccelMul: 2.2,
+    capacityUse: [0.95, 0.99],
+    brakeMargin: 1.0,
+    brakeReaction: -0.2,
+    lineFollow: [1, 1],
+    wanderMul: 0.1,
+    steerNoiseMul: 0.2,
+    lapseRate: 0,
+    lapseDur: [0.6, 1.0],
+    startCalm: 8,
+    attackMul: 2.2,
+    attackNeedsPin: true,
+    defend: 1,
+    slip: 1,
+    swingSpeed: 1.2,
+    nitroThreshold: 0.1,
+    nitroNeed: [0.5, 10],
+    nitroSmart: true,
+    nitroChain: 1,
+    nitroChainAim: [0.775, 0.81],
+    shock: 1,
+    pickup: 1,
+    rampMul: 1.6,
+    rubberBehind: [90, 90],
+    rubberAhead: [450, 250],
+    rubberBoostMul: 2,
+    rubberAmp: 2.5, // geride kalan bot: viraj ivmesi/kapasite payı bu kadar daha fazla artar (hızla yetişir)
+    rubberSlowMul: 0,
+    nitroRubber: 2, // öndeyken de nitro kullanır
+    avoidMargin: 0.8,
+  },
+  // Oyuncunun otopilotu (isPlayer): eski 'normal' davranışı; zorluktan bağımsız, insan oyuncu seviyesi.
+  player: {
     skillPull: 0,
     speedRatio: [0.88, 1.0],
     latAccelMul: 1.0,
@@ -76,39 +139,6 @@ export const PROFILES = {
     rubberSlowMul: 1.0,
     nitroRubber: 0.3,
     avoidMargin: 0.9,
-  },
-  hard: {
-    skillPull: 0.6,
-    speedRatio: [0.97, 1.0],
-    latAccelMul: 1.6,
-    capacityUse: [0.92, 0.98],
-    brakeMargin: 0.95,
-    brakeReaction: -0.1,
-    lineFollow: [0.9, 1.0],
-    wanderMul: 0.35,
-    steerNoiseMul: 0.4,
-    lapseRate: 0,
-    lapseDur: [0.6, 1.0],
-    startCalm: 12,
-    attackMul: 1.8,
-    attackNeedsPin: true,
-    defend: 1,
-    slip: 1,
-    swingSpeed: 1.15,
-    nitroThreshold: 0.12,
-    nitroNeed: [0.55, 15],
-    nitroSmart: true,
-    nitroChain: 1,
-    nitroChainAim: [0.775, 0.83],
-    shock: 1,
-    pickup: 1,
-    rampMul: 1.4,
-    rubberBehind: [150, 150],
-    rubberAhead: [380, 250],
-    rubberBoostMul: 1.0,
-    rubberSlowMul: 0.3,
-    nitroRubber: 2, // zor: öndeyken de nitro kullanır
-    avoidMargin: 0.8,
   },
 };
 
