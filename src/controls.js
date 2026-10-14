@@ -73,9 +73,9 @@ const STYLE = `
 .tc-camera svg { width: 24px; height: 24px; fill: rgba(255,255,255,0.92); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
 .tc-pause.tc-pressed, .tc-camera.tc-pressed { background: rgba(255,255,255,0.35); }
 @media (max-height: 420px) { .tc-root { --tc-steer: 72px; --tc-nitro: 66px; --tc-drift: 60px; --tc-pedal: 68px; } }
-/* Dikey: nitro ve drift pedalların üstünde (iki sıra), ekranın alt-ortasındaki hız göstergesine binmesin */
+/* Dikey: kontroller hız göstergesinin üstüne alınır; nitro ve drift pedalların üstünde (iki sıra) */
 @media (orientation: portrait) {
-  .tc-root { --tc-lift: 0px; }
+  .tc-root { --tc-bottom: calc(max(16px, env(safe-area-inset-bottom)) + 104px); }
   .tc-nitro { right: var(--tc-redge); bottom: calc(var(--tc-bottom) + var(--tc-pedal) * 1.55 + var(--tc-gap)); }
   .tc-drift { right: calc(var(--tc-redge) + var(--tc-nitro) + var(--tc-gap)); bottom: calc(var(--tc-bottom) + var(--tc-pedal) * 1.55 + var(--tc-gap)); }
 }
