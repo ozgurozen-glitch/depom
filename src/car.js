@@ -277,6 +277,14 @@ export class Car {
   setViewMode(view) {
     this.viewMode = view;
     this.parts.setViewMode(view);
+    // İç görünümlerde kamera gövdeye çok yakın: gölge haritasının çözünürlüğü kaputta tırtıklı
+    // lekeler olarak görünür. Bu görünümlerde araba kendi gövdesine gölge almaz.
+    const inside = view === 'hood' || view === 'bumper';
+    this.mesh.traverse((o) => {
+      if (!o.isMesh) return;
+      if (o.userData.baseReceiveShadow === undefined) o.userData.baseReceiveShadow = o.receiveShadow;
+      o.receiveShadow = inside ? false : o.userData.baseReceiveShadow;
+    });
   }
 
   getRearWheelPositions(out) {
