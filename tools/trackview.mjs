@@ -124,10 +124,15 @@ async function main() {
     await page.screenshot({ path: file });
     const stats = await page.evaluate(() => {
       const g = window.__game;
+      // Bir karenin tüm geçişlerini (gölge + sahne + efektler) say
+      const info = g.renderer.info;
+      info.autoReset = false;
+      info.reset();
       const t = performance.now();
       g.effects.render();
       const ms = performance.now() - t;
-      const r = g.renderer.info.render;
+      const r = { calls: info.render.calls, triangles: info.render.triangles };
+      info.autoReset = true;
       return { calls: r.calls, triangles: r.triangles, fps: Math.round(g.fps), ms: Math.round(ms) };
     });
     console.log(`${file}  cam=${info.pos} ${info.section}  calls=${stats.calls} tris=${stats.triangles} fps=${stats.fps} renderMs=${stats.ms}`);

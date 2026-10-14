@@ -2,6 +2,8 @@
 // sahneye eklediği her şeyi kaldırıp GPU kaynaklarını serbest bırakır (bkz. Game.loadTrack).
 import { Track } from './track.js';
 import { Environment } from './environment.js';
+import { BangkokTrack } from './tracks/bangkok/track.js';
+import { BangkokEnvironment } from './tracks/bangkok/environment.js';
 
 export const TRACKS = [
   {
@@ -12,6 +14,17 @@ export const TRACKS = [
     create(scene, renderer) {
       const track = new Track(scene);
       const environment = new Environment(scene, renderer, track);
+      return { track, environment };
+    },
+  },
+  {
+    id: 'bangkok',
+    name: 'Bangkok Nights',
+    subtitle: 'Gece · neon · ıslak asfalt',
+    laps: 2,
+    create(scene, renderer) {
+      const track = new BangkokTrack(scene);
+      const environment = new BangkokEnvironment(scene, renderer, track);
       return { track, environment };
     },
   },
