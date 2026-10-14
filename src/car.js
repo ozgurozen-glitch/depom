@@ -75,6 +75,29 @@ export const CAR_TUNING = Object.freeze({
   gripRecoverStart: 0.12, // çıkış anındaki tutuş çarpanı (smoothstep ile 1'e)
   yawResponseRecover: 5, // çıkışta yaw oranının hedefe yaklaşması (yawResponse'a kademeli geçer)
 
+  // Manuel gaz: gaz girdisi süzülür (basınca hızlı, bırakınca yumuşak); bırakınca motor freni + aero sürtünme
+  throttleRise: 14,
+  throttleFall: 4.5,
+  coastDrag: 2.4, // azami hızda motor freni + sürtünmeye eklenen ivme (m/s², (v/vmax)² ile)
+  handbrakeDecel: 11, // Space (direksiyonsuz): el freni yavaşlaması
+  driftThrottleAccel: 0.35, // drift'te gaz tutuluyken itiş oranı (hızı korur)
+  // Viraj çıkışında gazla hafif arka kayma (güç kayması): gaz x direksiyon grip'i düşürür
+  powerSlide: 0.4,
+  powerSlideYaw: 0,
+  // Oyuncu direksiyonu: hıza duyarlı süzgeç ve eğri (yüksek hızda daha ince kontrol)
+  steerRateLow: 16,
+  steerRateHigh: 6,
+  steerCurveHigh: 1.45,
+  // Gövde: yatış / dalış (kritik sönümlü yay) ve süspansiyon
+  bodyOmega: 9,
+  suspK: 160,
+  suspC: 24,
+  // Duvar: hız kaybı birkaç adıma yayılır
+  wallLossRate: 9,
+  // İniş sonrası kısa tutuş toparlanması
+  landGripTime: 0.35,
+  landGripStart: 0.4,
+
   // Slipstream (draft 0..1): azami hız ve ivmeye eklenen azami oran
   draftSpeedBonus: 0.08,
   draftAccelBonus: 0.08,
@@ -133,6 +156,33 @@ const wrapS = (track, s) => {
 };
 const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2);
 
+function makePose() {
+  return {
+    pos: new THREE.Vector3(), q: new THREE.Quaternion(), chY: 0, dive: 0, lean: 0, spinF: 0, spinR: 0, steer: 0,
+    visQ: new THREE.Quaternion(), visY: 0, shPos: new THREE.Vector3(), shQ: new THREE.Quaternion(), shScale: 1,
+    shVisible: false, visVisible: true, yaw: 0,
+  };
+}
+
+function copyPose(d, s) {
+  d.pos.copy(s.pos); d.q.copy(s.q); d.chY = s.chY; d.dive = s.dive; d.lean = s.lean; d.spinF = s.spinF; d.spinR = s.spinR;
+  d.steer = s.steer; d.visQ.copy(s.visQ); d.visY = s.visY; d.shPos.copy(s.shPos); d.shQ.copy(s.shQ); d.shScale = s.shScale;
+  d.shVisible = s.shVisible; d.visVisible = s.visVisible; d.yaw = s.yaw;
+}
+
+const _eul = new THREE.Euler(0, 0, 0, 'YXZ');
+const TAU = Math.PI * 2;
+
+// Kritik sönümlü yay (analitik, dt'den bağımsız kararlı, salınım yok): o[x], o[x + 'V'].
+function springStep(o, key, target, w, dt) {
+  const e = o[key] - target;
+  const v = o[key + 'V'];
+  const c = v + w * e;
+  const d = Math.exp(-w * dt);
+  o[key] = target + (e + c * dt) * d;
+  o[key + 'V'] = (v - w * c * dt) * d;
+}
+
 export class Car {
   constructor({ scene, color, name, isPlayer, spec = null }) {
     this.scene = scene;
@@ -156,7 +206,13 @@ export class Car {
     scene.add(this.mesh);
     if (this.parts.shadow) scene.add(this.parts.shadow);
 
-    this.position = this.mesh.position;
+    // Fizik durumu mesh'ten ayrı: mesh, interpolate() ile son iki fizik durumu arasına yerleştirilir.
+    this.position = new THREE.Vector3();
+    this.renderPosition = new THREE.Vector3(); // interpolate() sonrası mesh'in dünya konumu (kamera için)
+    this.renderYaw = 0;
+    this._pose = makePose();
+    this._posePrev = makePose();
+    this._snapVisual = true;
     this.velocity = new THREE.Vector3();
     this.yaw = 0;
     this.yawRate = 0; // rad/s (kamera / efektler için)
@@ -219,14 +275,59 @@ export class Car {
     this._resetState();
     this._resetVisual();
     this._snapGround = true;
-    this.mesh.rotation.set(0, yaw, 0);
-    this.mesh.updateMatrixWorld(true);
-    if (this.parts.shadow) {
-      this.parts.shadow.visible = true;
-      this.parts.shadow.position.set(pos.x, pos.y + 0.03, pos.z);
-      this.parts.shadow.rotation.set(0, yaw, 0);
-      this.parts.shadow.scale.setScalar(1);
+    this._poseFromState();
+    this._snapVisual = true;
+    this._applyPose(this._pose, this._pose, 1);
+  }
+
+  // Fizik durumundan sıfırlanmış (yatış/süspansiyon yok) görsel pozu üretir; ışınlanmada ara değer atlar.
+  _poseFromState() {
+    const c = this._pose;
+    c.pos.copy(this.position);
+    c.yaw = this.yaw;
+    _eul.set(0, this.yaw, 0, 'YXZ');
+    c.q.setFromEuler(_eul);
+    c.chY = 0; c.dive = 0; c.lean = 0; c.steer = 0;
+    c.spinF = this._wheelSpin; c.spinR = this._rearSpin;
+    c.visQ.identity(); c.visY = this.dims.pivotY; c.visVisible = true;
+    c.shPos.set(this.position.x, this.position.y + 0.03, this.position.z);
+    c.shQ.copy(c.q); c.shScale = 1; c.shVisible = true;
+    copyPose(this._posePrev, c);
+  }
+
+  // Mesh'i önceki/şimdiki fizik durumu arasına yerleştirir (alpha 0..1). Game her karede çağırır.
+  interpolate(alpha) {
+    const a = alpha > 0 ? (alpha < 1 ? alpha : 1) : 0;
+    this._applyPose(this._posePrev, this._pose, this._snapVisual ? 1 : a);
+  }
+
+  _applyPose(p0, p1, a) {
+    const P = this.parts;
+    const m = this.mesh;
+    m.position.lerpVectors(p0.pos, p1.pos, a);
+    m.quaternion.slerpQuaternions(p0.q, p1.q, a);
+    this.renderPosition.copy(m.position);
+    this.renderYaw = p0.yaw + wrapAngle(p1.yaw - p0.yaw) * a;
+    P.chassis.position.y = lerp(p0.chY, p1.chY, a);
+    P.chassis.rotation.set(lerp(p0.dive, p1.dive, a), 0, lerp(p0.lean, p1.lean, a));
+    const sf = lerp(p0.spinF, p1.spinF, a) % TAU;
+    P.frontWheels[0].rotation.x = sf;
+    P.frontWheels[1].rotation.x = sf;
+    P.rearAxle.rotation.x = lerp(p0.spinR, p1.spinR, a) % TAU;
+    const st = lerp(p0.steer, p1.steer, a);
+    P.frontPivots[0].rotation.y = st;
+    P.frontPivots[1].rotation.y = st;
+    P.visual.quaternion.slerpQuaternions(p0.visQ, p1.visQ, a);
+    P.visual.position.y = lerp(p0.visY, p1.visY, a);
+    P.visual.visible = p1.visVisible;
+    if (P.shadow) {
+      const sh = P.shadow;
+      sh.visible = p1.shVisible;
+      sh.position.lerpVectors(p0.shPos, p1.shPos, a);
+      sh.quaternion.slerpQuaternions(p0.shQ, p1.shQ, a);
+      sh.scale.setScalar(lerp(p0.shScale, p1.shScale, a));
     }
+    m.updateMatrixWorld(true);
   }
 
   addNitro(amount) {
@@ -325,6 +426,18 @@ export class Car {
     }
 
     if (this._wallCooldown > 0) this._wallCooldown -= dt;
+    if (this._wallLoss > 0) {
+      // Duvar sürtünmesi/darbesi hız kaybı birkaç adıma yayılır (sert duraklama yok).
+      const v = this.velocity;
+      const h = Math.hypot(v.x, v.z);
+      const take = this._wallLoss * damp(this.T.wallLossRate, dt);
+      this._wallLoss -= take;
+      if (h > 0.01) {
+        const k = Math.max(0, h - take) / h;
+        v.x *= k;
+        v.z *= k;
+      }
+    }
 
     if (this.wrecked) {
       this._updateWreck(dt, track);
@@ -333,7 +446,7 @@ export class Car {
         this._ghostTimer -= dt;
         if (this._ghostTimer <= 0) this.ghost = false;
       }
-      const inp = this._readInput(input);
+      const inp = this._readInput(input, dt);
       this._updateNitro(dt, inp.nitro);
       const grip = !this._inAir || this.airTime < this.T.jumpEventMinAir;
       if (grip) this._stepGround(dt, inp);
@@ -354,17 +467,35 @@ export class Car {
     this._updateVisual(dt, track);
   }
 
-  _readInput(input) {
+  // Girdiyi okur. throttle: gaz tuşu (manuel; bırakınca motor freni), brake: fren/geri, drift: el freni/drift.
+  // Gaz süzülür (basınca hızlı, bırakınca yumuşak). Oyuncu direksiyonu hıza duyarlı süzgeçten geçer
+  // (steerF: yüksek hızda daha yavaş, daha ince); botlar ham direksiyonu aynen kullanır.
+  _readInput(input, dt) {
     const s = this._inp;
+    const T = this.T;
+    let thr = 0;
     if (!input) {
       s.throttle = 0; s.brake = 0; s.steer = 0; s.nitro = false; s.drift = false;
-      return s;
+    } else {
+      thr = clamp(Number(input.throttle) || 0, 0, 1);
+      s.brake = clamp(Number(input.brake) || 0, 0, 1);
+      s.steer = clamp(Number(input.steer) || 0, -1, 1);
+      s.nitro = Boolean(input.nitro);
+      s.drift = Boolean(input.drift);
     }
-    s.throttle = clamp(Number(input.throttle) || 0, 0, 1);
-    s.brake = clamp(Number(input.brake) || 0, 0, 1);
-    s.steer = clamp(Number(input.steer) || 0, -1, 1);
-    s.nitro = Boolean(input.nitro);
-    s.drift = Boolean(input.drift);
+    this._thr += (thr - this._thr) * damp(thr > this._thr ? T.throttleRise : T.throttleFall, dt);
+    if (Math.abs(thr - this._thr) < 1e-3) this._thr = thr;
+    s.throttle = this._thr;
+    if (this.isPlayer) {
+      const hs = Math.hypot(this.velocity.x, this.velocity.z);
+      const sf = clamp(hs / T.maxSpeed, 0, 1);
+      this._steerF += (s.steer - this._steerF) * damp(lerp(T.steerRateLow, T.steerRateHigh, sf), dt);
+      const a = Math.abs(this._steerF);
+      s.steerF = Math.sign(this._steerF) * a ** lerp(1, T.steerCurveHigh, sf);
+    } else {
+      this._steerF = s.steer;
+      s.steerF = s.steer;
+    }
     return s;
   }
 
@@ -468,15 +599,20 @@ export class Car {
       ? lerp(this.T.yawRateHigh, this.T.yawRateNitro, clamp((absF - this.T.maxSpeed) / (this.T.maxSpeed * 0.38), 0, 1))
       : lerp(this.T.yawRateLow, this.T.yawRateHigh, (absF / this.T.maxSpeed) ** 1.3);
     const maxRate = Math.min(absF / this.T.minTurnRadius, cap);
-    const target = -inp.steer * maxRate * (F >= 0 ? 1 : -1);
+    const st = inp.steerF;
+    // Güç kayması: gaz açıkken (ivme talebi) direksiyonla grip düşer, gövde biraz daha fazla döner.
+    const vmaxNow = this._currentMaxSpeed();
+    const demand = inp.brake > 0 ? 0 : clamp(inp.throttle * (1 - (absF / vmaxNow) ** 2), 0, 1);
+    const slide = this.T.powerSlide * demand * Math.min(1, Math.abs(st) * 1.3) * smoothstep(8, 22, absF);
+    const target = -st * maxRate * (1 + this.T.powerSlideYaw * slide / (this.T.powerSlide || 1)) * (F >= 0 ? 1 : -1);
     // Drift çıkışında tutuş ve yaw tepkisi smoothstep ile kademeli geri gelir (ani "snap" yok).
     let grip = 0;
     let yawResp = this.T.yawResponse;
     let gripMul = 1;
     if (this._gripRecover > 0) {
       this._gripRecover = Math.max(0, this._gripRecover - dt);
-      const r = smoothstep(0, 1, 1 - this._gripRecover / this.T.gripRecoverTime);
-      gripMul = lerp(this.T.gripRecoverStart, 1, r);
+      const r = smoothstep(0, 1, 1 - this._gripRecover / this._gripRecoverDur);
+      gripMul = lerp(this._gripRecoverStartMul, 1, r);
       yawResp = lerp(this.T.yawResponseRecover, this.T.yawResponse, r);
     }
     this.yawRate += (target - this.yawRate) * damp(yawResp, dt);
@@ -490,7 +626,7 @@ export class Car {
     F = wx * s2 + wz * c2;
     L = wx * -c2 + wz * s2;
     const sf = clamp(absF / this.T.maxSpeed, 0, 1);
-    grip = lerp(this.T.gripLow, this.T.gripHigh, sf) * gripMul;
+    grip = lerp(this.T.gripLow, this.T.gripHigh, sf) * gripMul * (1 - slide);
     const L2 = L * Math.exp(-grip * dt);
     // Kaybolan yanal enerji ileri hıza aktarılır — yalnızca araba ileri yönde hareket ederken
     // (düşük hızda yandan itilen araba ileri fırlamasın).
@@ -540,13 +676,21 @@ export class Car {
           const thrust = (this.T.accel * (1 + this.T.draftAccelBonus * this._draftEff) + (nitro ? nitro.thrust : 0)) * thr;
           a = thrust * (1 - (Math.max(0, F) / vmax) ** this.T.accelExponent);
         } else {
-          a = -(1 + (F - vmax) * this.T.overSpeedDecel);
-          if (thr < 1) a = Math.min(a, -this.T.coastDecel * (1 - thr));
+          // Hız hedefin üstünde: tam gazda sönümlü aşım freni; kısmi gazda motor freni gaz bırakılma oranında
+          // (ikisi yumuşak harmanlanır).
+          const r = Math.min(1.3, F / this.T.maxSpeed);
+          const aPart = -(this.T.coastDecel + this.T.coastDrag * r * r) * (1 - thr);
+          const aOver = -(1 + (F - vmax) * this.T.overSpeedDecel);
+          a = lerp(aPart, aOver, smoothstep(0.8, 1, thr));
         }
       }
     } else {
-      a = Math.abs(F) > 0.2 ? -Math.sign(F) * this.T.coastDecel : -F * 4;
+      // Gaz bırakılınca motor freni + hızla artan aero sürtünme (yumuşak yavaşlama).
+      const r = Math.min(1.3, Math.abs(F) / this.T.maxSpeed);
+      a = Math.abs(F) > 0.2 ? -Math.sign(F) * (this.T.coastDecel + this.T.coastDrag * r * r) : -F * 4;
     }
+    // El freni (Space, direksiyonsuz): drift'e girmediyse yavaşlatır.
+    if (inp.drift && !this.drifting && Math.abs(inp.steer) < this.T.driftSteerThreshold && F > 1) a -= this.T.handbrakeDecel;
     // Yokuş: hafif yerçekimi etkisi (arcade).
     a -= this.T.slopeGravity * this._slope;
     return a;
@@ -591,6 +735,8 @@ export class Car {
     this.drifting = false;
     this.events.push({ type: 'drift_end', car: this, duration: this._driftTime });
     this._gripRecover = this.T.gripRecoverTime;
+    this._gripRecoverDur = this.T.gripRecoverTime;
+    this._gripRecoverStartMul = this.T.gripRecoverStart;
     this._slipValid = false;
     this.driftDir = 0;
   }
@@ -647,6 +793,10 @@ export class Car {
       const vmax = this._currentMaxSpeed();
       if (hs < vmax) aT += (T.accel + n.thrust) * 0.8 * (1 - (hs / vmax) ** T.accelExponent);
     }
+    if (inp.brake === 0 && inp.throttle > 0) {
+      const vm = this._currentMaxSpeed();
+      if (hs < vm) aT += T.accel * T.driftThrottleAccel * inp.throttle * (1 - (hs / vm) ** T.accelExponent);
+    }
     aT -= T.slopeGravity * this._slope * 0.5;
     this._driftDecel += (aT - this._driftDecel) * damp(T.driftDecelResponse, dt);
     const sp = Math.max(0, hs + this._driftDecel * dt);
@@ -669,7 +819,7 @@ export class Car {
     // Havada sınırlı yaw; hız vektörü değişmez → inişte tutuş hizalar.
     this._slipValid = false;
     const maxRate = Math.min(hs / this.T.minTurnRadius, this.T.yawRateHigh) * this.T.airSteer;
-    const target = -inp.steer * maxRate;
+    const target = -inp.steerF * maxRate;
     this.yawRate += (target - this.yawRate) * damp(6, dt);
     this.yaw = wrapAngle(this.yaw + this.yawRate * dt);
 
@@ -829,6 +979,12 @@ export class Car {
       v.z *= 0.97;
     }
     this._suspVel -= Math.min(impact, 20) * 0.09;
+    if (this._gripRecover < this.T.landGripTime * 0.5) {
+      // İniş sonrası kısa tutuş toparlanması: yanal tutuş ve yaw tepkisi kademeli döner.
+      this._gripRecover = this.T.landGripTime;
+      this._gripRecoverDur = this.T.landGripTime;
+      this._gripRecoverStartMul = this.T.landGripStart;
+    }
     v.y = roadVy;
     this.position.y = h;
     this._inAir = false;
@@ -890,9 +1046,7 @@ export class Car {
       const hs2 = Math.hypot(v.x, v.z);
       if (hs2 > 0.01) {
         const dv = Math.min(hs2 * 0.4, vn * this.T.wallFriction + Math.max(0, vn - 3) * this.T.wallImpactLoss);
-        const k = (hs2 - dv) / hs2;
-        v.x *= k;
-        v.z *= k;
+        this._wallLoss += dv; // hemen değil, birkaç adıma yayılarak uygulanır
       }
       if (this.drifting && strength > 0.35) this._endDrift();
     }
@@ -1018,6 +1172,7 @@ export class Car {
     this._ghostTimer = this.T.ghostDuration;
     this._prevNitroIn = true; // basılı tutulan nitro hemen ateşlenmesin
     this._resetVisual();
+    this._snapVisual = true;
     this.events.push({ type: 'respawn', car: this });
   }
 
@@ -1065,38 +1220,44 @@ export class Car {
       rollT = 0;
       rate = 2.6;
     }
+    // Önceki fizik adımının pozu ara değer için saklanır.
+    const pose = this._pose;
+    copyPose(this._posePrev, pose);
+
     this._pitch += (pitchT - this._pitch) * damp(rate, dt);
     this._roll += (rollT - this._roll) * damp(rate, dt);
-    this.mesh.rotation.set(-this._pitch, this.yaw, this._roll);
+    _eul.set(-this._pitch, this.yaw, this._roll, 'YXZ');
+    pose.q.setFromEuler(_eul);
+    pose.pos.copy(this.position);
+    pose.yaw = this.yaw;
 
-    // Süspansiyon (yay-sönümleyici): iniş darbesi, yol titreşimi.
-    const k = 160;
-    const c = 13;
+    // Süspansiyon (yay-sönümleyici, ζ≈0.95): iniş darbesi, yol titreşimi.
+    const k = this.T.suspK;
+    const c = this.T.suspC;
     this._suspVel += (-k * this._suspY - c * this._suspVel) * dt;
     this._suspY += this._suspVel * dt;
     this._suspY = clamp(this._suspY, -0.12, 0.1);
     const vib = this._inAir ? 0 : Math.sin(this._time * 37) * Math.min(hs, 90) * 0.00005;
     const droop = this._inAir && !this.wrecked ? 0.05 : 0;
     this._droop += (droop - this._droop) * damp(8, dt);
-    P.chassis.position.y = this._suspY + vib + this._droop;
+    pose.chY = this._suspY + vib + this._droop;
 
     // Gövde yatışı (merkezkaç) ve dalış/kalkış (boyuna ivme).
     const latAcc = this.yawRate * hs;
     const leanT = this._inAir ? 0 : clamp(latAcc * (this.drifting ? 0.0028 : 0.0021), -0.075, 0.075);
-    this._lean += (leanT - this._lean) * damp(7, dt);
+    springStep(this, '_lean', leanT, this.T.bodyOmega, dt);
     const diveT = this._inAir ? 0 : clamp(-this._accelLong * 0.0032, -0.04, 0.055);
-    this._dive += (diveT - this._dive) * damp(7, dt);
-    P.chassis.rotation.set(this._dive, 0, this._lean);
+    springStep(this, '_dive', diveT, this.T.bodyOmega, dt);
+    pose.lean = this._lean;
+    pose.dive = this._dive;
 
     // Tekerlekler: dönüş + ön direksiyon (drift'te karşı direksiyon görünümü).
     const fwdSpeed = v.x * sinY + v.z * cosY;
     const spin = (fwdSpeed / this.dims.wheelRadius) * dt;
-    this._wheelSpin = (this._wheelSpin + spin) % (Math.PI * 2);
-    const rearSpin = this.drifting ? spin * 1.25 : spin;
-    this._rearSpin = (this._rearSpin + rearSpin) % (Math.PI * 2);
-    P.frontWheels[0].rotation.x = this._wheelSpin;
-    P.frontWheels[1].rotation.x = this._wheelSpin;
-    P.rearAxle.rotation.x = this._rearSpin;
+    this._wheelSpin += spin; // sarılmaz: ara değer için süreklidir (uygularken mod alınır)
+    this._rearSpin += this.drifting ? spin * 1.25 : spin;
+    pose.spinF = this._wheelSpin;
+    pose.spinR = this._rearSpin;
     let steerVis;
     if (this.drifting) {
       const velYaw = Math.atan2(v.x, v.z);
@@ -1107,29 +1268,29 @@ export class Car {
     }
     if (this.wrecked) steerVis = this._steerVis;
     this._steerVis += (steerVis - this._steerVis) * damp(14, dt);
-    P.frontPivots[0].rotation.y = this._steerVis;
-    P.frontPivots[1].rotation.y = this._steerVis;
+    pose.steer = this._steerVis;
 
     // Görsel numaralar: takla (ileri eksen), flat spin (Y), wreck takla.
-    const vis = P.visual;
     if (this.wrecked) {
       const r = this._wreckRot;
-      vis.rotation.set(r.x, r.y, r.z);
-      vis.position.y = this.dims.pivotY + 0.35 * Math.abs(Math.sin(r.z)) + 0.25 * Math.abs(Math.sin(r.x));
+      _eul.set(r.x, r.y, r.z, 'YXZ');
+      pose.visQ.setFromEuler(_eul);
+      pose.visY = this.dims.pivotY + 0.35 * Math.abs(Math.sin(r.z)) + 0.25 * Math.abs(Math.sin(r.x));
     } else if (this._trick) {
       const p = easeInOut(clamp(this._trickTime / this._trickDuration, 0, 1));
       const ang = p * Math.PI * 2 * this._trickDir;
-      if (this._trick === 'roll') vis.rotation.set(0, 0, -ang);
-      else vis.rotation.set(0, -ang, 0);
-      vis.position.y = this.dims.pivotY + (this._trick === 'roll' ? 0.25 * Math.sin(p * Math.PI) : 0);
+      if (this._trick === 'roll') _eul.set(0, 0, -ang, 'YXZ');
+      else _eul.set(0, -ang, 0, 'YXZ');
+      pose.visQ.setFromEuler(_eul);
+      pose.visY = this.dims.pivotY + (this._trick === 'roll' ? 0.25 * Math.sin(p * Math.PI) : 0);
     } else {
-      vis.rotation.set(0, 0, 0);
-      vis.position.y = this.dims.pivotY;
+      pose.visQ.identity();
+      pose.visY = this.dims.pivotY;
     }
     if (this.drifting) this._lastDriftDir = this.driftDir;
 
     // Ghost: yanıp sönme.
-    vis.visible = !this.ghost || Math.floor(this._ghostTimer * 12) % 3 !== 0;
+    pose.visVisible = !this.ghost || Math.floor(this._ghostTimer * 12) % 3 !== 0;
 
     // Stop lambaları
     const braking = !this.wrecked && (this.drifting || (this._inp.brake > 0.1 && fwdSpeed > 1));
@@ -1140,17 +1301,23 @@ export class Car {
 
     // Temas gölgesi yolda kalır.
     if (P.shadow) {
-      const sh = P.shadow;
       const hAbove = this.position.y - this._groundY;
-      sh.visible = hAbove < 14;
-      sh.position.set(this.position.x, this._groundY + 0.03, this.position.z);
+      pose.shVisible = hAbove < 14;
+      pose.shPos.set(this.position.x, this._groundY + 0.03, this.position.z);
       const groundPitch = this._inAir ? 0 : this._pitch;
       const groundRoll = this._inAir ? 0 : this._roll;
-      sh.rotation.set(-groundPitch, this.yaw, groundRoll);
-      sh.scale.setScalar(1 / (1 + Math.max(0, hAbove) * 0.12));
+      _eul.set(-groundPitch, this.yaw, groundRoll, 'YXZ');
+      pose.shQ.setFromEuler(_eul);
+      pose.shScale = 1 / (1 + Math.max(0, hAbove) * 0.12);
     }
 
-    this.mesh.updateMatrixWorld(true);
+    // Işınlanma (placeAt/respawn): ara değer atlanır, çizgi oluşmaz.
+    if (this._snapVisual) {
+      copyPose(this._posePrev, pose);
+      this._snapVisual = false;
+    }
+    // interpolate() çağrılmazsa (testler) mesh yine de son fizik durumunda olsun.
+    this._applyPose(pose, pose, 1);
   }
 
   // -------------------------------------------------------------------------------------------
@@ -1172,6 +1339,11 @@ export class Car {
     this._driftFlip = 0;
     this._lastDriftDir = 1;
     this._gripRecover = 0;
+    this._gripRecoverDur = this.T.gripRecoverTime;
+    this._gripRecoverStartMul = this.T.gripRecoverStart;
+    this._wallLoss = 0;
+    this._thr = 0;
+    this._steerF = 0;
     this._driftFresh = false;
     this._driftSteer = 0;
     this._slip = 0;
@@ -1210,7 +1382,9 @@ export class Car {
     this._suspVel = 0;
     this._droop = 0;
     this._lean = 0;
+    this._leanV = 0;
     this._dive = 0;
+    this._diveV = 0;
     this._wheelSpin = this._wheelSpin || 0;
     this._rearSpin = this._rearSpin || 0;
     this._steerVis = 0;
@@ -1218,12 +1392,6 @@ export class Car {
     this._trick = null;
     this._wreckRot.set(0, 0, 0);
     this._wreckSpin.set(0, 0, 0);
-    const P = this.parts;
-    P.visual.rotation.set(0, 0, 0);
-    P.visual.position.y = this.dims.pivotY;
-    P.visual.visible = true;
-    P.chassis.position.y = 0;
-    P.chassis.rotation.set(0, 0, 0);
-    P.setBraking(false);
+    this.parts.setBraking(false);
   }
 }

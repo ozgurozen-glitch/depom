@@ -7,6 +7,7 @@ import { FlatTrack } from './flat-track.js';
 import { CARS, getCarDef } from '../../src/cars.js';
 import { measureDrift, printDrift } from './drift.mjs';
 import { measureCar, deriveStats } from './stats.mjs';
+import { measureAll, printAll, throttleRelease } from './dynamics.mjs';
 
 const DT = 1 / 60;
 const KMH = 3.6;
@@ -480,6 +481,159 @@ console.log('\n# Slipstream (draft)');
     check(`${def.name}: draft kalkınca azami hıza geri döner`, Math.abs(c1.speedKmh - vmax) < 3, `${c1.speedKmh.toFixed(1)} km/s`);
   }
   SPEC = null;
+}
+
+// ---------------------------------------------------------------------------------------------
+console.log('\n# Manuel gaz');
+{
+  const tr = new FlatTrack(5000);
+  const idle = makeCar(tr, 0, 0, 0);
+  run(idle, tr, 3, input({ throttle: 0 }));
+  check('gaz yokken araba durur (otomatik gaz yok)', idle.speedKmh < 1, `${idle.speedKmh.toFixed(1)} km/s`);
+  const gas = makeCar(tr, 0, 0, 0);
+  run(gas, tr, 3, input({ throttle: 1 }));
+  check('gaz tuşu ivmelendirir', gas.speedKmh > 100, `${gas.speedKmh.toFixed(0)} km/s`);
+
+  const rel = throttleRelease(250);
+  console.log(`     gaz bırakma @250: jerk ${rel.peakJerk.toFixed(0)} m/s³ (önce 308), ilk 0.1 s yavaşlama ${rel.decel0_1s.toFixed(2)} m/s² (önce 3.00 ani), 4 s kayıp ${rel.lossKmh.toFixed(0)} km/s (önce 43)`);
+  check('gaz bırakınca motor freni yumuşak başlar (jerk ≥ %60 düştü)', rel.peakJerk < 308 * 0.4, `${rel.peakJerk.toFixed(0)} m/s³`);
+  check('gaz bırakınca araba yine de yavaşlar (4 s ≥ 25 km/s)', rel.lossKmh > 25 && rel.maxDecel < 6, `kayıp ${rel.lossKmh.toFixed(0)} km/s, azami ${rel.maxDecel.toFixed(2)} m/s²`);
+
+  // ↓ yalnız fren: drift başlamaz. Space + direksiyon: drift.
+  const c1 = makeCar(tr, 0, 0, 200);
+  const e1 = run(c1, tr, 0.6, input({ throttle: 0, brake: 1, steer: 1 }));
+  check('↓ (fren) + direksiyon drift başlatmaz, yalnız yavaşlatır', !types(e1).includes('drift_start') && !c1.drifting && c1.speedKmh < 175, `${c1.speedKmh.toFixed(0)} km/s`);
+  const c2 = makeCar(tr, 0, 0, 200);
+  const e2 = run(c2, tr, 0.3, input({ throttle: 1, drift: true, steer: 1 }));
+  check('Space + direksiyon (gazlı) drift başlatır', types(e2).includes('drift_start') && c2.drifting);
+  run(c2, tr, 2, input({ throttle: 1, drift: true, steer: 1 }));
+  const c3 = makeCar(tr, 0, 0, 200);
+  run(c3, tr, 2.3, input({ throttle: 0, drift: true, steer: 1 }));
+  check('drift sırasında gaz hızı korur', c2.speedKmh > c3.speedKmh + 8, `gazlı ${c2.speedKmh.toFixed(0)} / gazsız ${c3.speedKmh.toFixed(0)} km/s`);
+  // El freni: direksiyonsuz Space yavaşlatır
+  const h0 = makeCar(tr, 0, 0, 150);
+  const h1 = makeCar(tr, 0, 0, 150);
+  run(h0, tr, 1, input({ throttle: 0 }));
+  run(h1, tr, 1, input({ throttle: 0, drift: true }));
+  check('Space (direksiyonsuz) el freni: gaz bırakmaktan belirgin fazla yavaşlatır', h1.speedKmh < h0.speedKmh - 12 && !h1.drifting, `${h0.speedKmh.toFixed(0)} → ${h1.speedKmh.toFixed(0)} km/s`);
+  // Fren: durunca geri vites (drift'siz)
+  const r0 = makeCar(tr, 0, 0, 60);
+  run(r0, tr, 6, input({ throttle: 0, brake: 1 }));
+  check('↓ durunca geri vites (drift olmadan)', r0.speed < -5 && r0.speed >= -CAR_TUNING.reverseMax - 0.01, `speed ${r0.speed.toFixed(1)} m/s`);
+}
+
+// ---------------------------------------------------------------------------------------------
+console.log('\n# Sürüş dinamiği: direksiyon, yatış, süspansiyon, duvar, iniş, güç kayması');
+{
+  const B = { step250: { a: 11.7 }, step60: { a: 18.2 }, scrape: 232.9, impact: 749.7 };
+  const d = measureAll();
+  printAll('sonra', d);
+  console.log(`     önce: basamak @250 α ${B.step250.a}, @60 α ${B.step60.a}, süspansiyon 1 sıfır geçişi / 6.8 mm aşım, duvar sürtünme ${B.scrape} / 20° darbe ${B.impact} m/s²`);
+  check('klavye direksiyon basamağı @250: yaw ivmesi ≥ %50 düştü (ani savrulma yok)', d.step250.peakYawAcc < B.step250.a * 0.5, `${B.step250.a} → ${d.step250.peakYawAcc.toFixed(1)} rad/s²`);
+  check('klavye direksiyon basamağı @60: yaw ivmesi ≥ %30 düştü', d.step60.peakYawAcc < B.step60.a * 0.7, `${B.step60.a} → ${d.step60.peakYawAcc.toFixed(1)} rad/s²`);
+  check('yüksek hızda daha ince kontrol (@250 ivme < @60 ivmesi)', d.step250.peakYawAcc < d.step60.peakYawAcc * 0.6, `${d.step250.peakYawAcc.toFixed(1)} < ${d.step60.peakYawAcc.toFixed(1)}`);
+  check('gövde yatışı aşımsız (kritik sönümlü yay)', d.step250.leanOvershoot < 1.03, `x${d.step250.leanOvershoot.toFixed(3)}`);
+  check('süspansiyon salınmaz (0 sıfır geçişi, aşım < 2 mm)', d.susp.crossings === 0 && d.susp.overshoot < 0.002, `${d.susp.crossings} geçiş, ${(d.susp.overshoot * 1000).toFixed(1)} mm`);
+  check('duvar sürtünmesi: tepe yavaşlama ≥ %80 düştü (sert duraklama yok)', d.scrape.peakDecel < B.scrape * 0.2, `${B.scrape} → ${d.scrape.peakDecel.toFixed(1)} m/s²`);
+  check('duvar darbesi: tepe yavaşlama ≥ %60 düştü', d.impact.peakDecel < B.impact * 0.4, `${B.impact} → ${d.impact.peakDecel.toFixed(1)} m/s²`);
+  check('duvar darbesi hız kaybı korunur (%5–30)', d.impact.lossKmh > 12 && d.impact.lossKmh < 75, `${d.impact.lossKmh.toFixed(0)} km/s`);
+
+  // Güç kayması: viraj çıkışında gaz → daha büyük kayma açısı
+  const tr = new FlatTrack(5000);
+  const slipOf = (thr) => {
+    const c = makeCar(tr, 0, 0, 110);
+    run(c, tr, 1.2, input({ throttle: thr, steer: 1 }));
+    const F = c.velocity.x * Math.sin(c.yaw) + c.velocity.z * Math.cos(c.yaw);
+    const L = c.velocity.x * -Math.cos(c.yaw) + c.velocity.z * Math.sin(c.yaw);
+    return Math.abs(Math.atan2(L, F)) * 180 / Math.PI;
+  };
+  const sGas = slipOf(1);
+  const sCoast = slipOf(0);
+  check('viraj çıkışında gazla hafif arka kayma (kayma açısı gazlı > gazsız)', sGas > sCoast + 1.5 && sGas < 25, `gazlı ${sGas.toFixed(1)}° / gazsız ${sCoast.toFixed(1)}°`);
+
+  // İniş sonrası tutuş toparlanması
+  const jt = new TestTrack(null);
+  const jc = makeCar(jt, 330, 0, 280);
+  let landedAt = null;
+  let rec0 = 0;
+  for (let i = 0; i < 60 * 6 && landedAt === null; i++) {
+    jc.update(DT, input(), jt);
+    if (jc.events.some((e) => e.type === 'land')) { landedAt = i; rec0 = jc._gripRecover; }
+    jc.events.length = 0;
+  }
+  check('iniş sonrası tutuş toparlanma süresi başlar', landedAt !== null && rec0 > 0.25, `_gripRecover ${rec0.toFixed(2)} s`);
+  run(jc, jt, 0.5, input());
+  check('toparlanma ~0.35 s sonra biter', jc._gripRecover === 0);
+}
+
+// ---------------------------------------------------------------------------------------------
+console.log('\n# Görsel ara değer (interpolate)');
+{
+  const tr = new FlatTrack(5000);
+  const car = makeCar(tr, 0, 0, 180);
+  check('car.position mesh.position\'a takma ad değil', car.position !== car.mesh.position);
+  run(car, tr, 0.5, input({ steer: 0.3 }));
+  const p1 = car.position.clone();
+  const m1 = car.mesh.position.clone();
+  check('interpolate çağrılmadan mesh son fizik durumunda', m1.distanceTo(p1) < 1e-6);
+  car.update(DT, input({ steer: 0.3 }), tr);
+  const p2 = car.position.clone();
+  const yaw1 = car.yaw;
+  car.interpolate(0);
+  const at0 = car.mesh.position.clone();
+  car.interpolate(0.5);
+  const at5 = car.mesh.position.clone();
+  car.interpolate(1);
+  const at1 = car.mesh.position.clone();
+  check('interpolate(0) önceki, (1) şimdiki fizik konumu', at0.distanceTo(p1) < 1e-5 && at1.distanceTo(p2) < 1e-5, `adım ${p1.distanceTo(p2).toFixed(3)} m`);
+  check('interpolate(0.5) ikisinin ortası', at5.distanceTo(p1.clone().lerp(p2, 0.5)) < 1e-5);
+  car.interpolate(0.5);
+  const mid = new THREE.Euler().setFromQuaternion(car.mesh.quaternion, 'YXZ').y;
+  check('yaw ara değeri iki yaw arasında (kısa yol)', Math.abs(mid - (yaw1 + (car.parts.root.rotation.y - yaw1) * 0)) < 0.2 && Math.abs(car.renderYaw - mid) < 1e-4, `mesh yaw ${mid.toFixed(4)}, renderYaw ${car.renderYaw.toFixed(4)}`);
+  check('renderPosition = mesh konumu', car.renderPosition.distanceTo(car.mesh.position) < 1e-9);
+  // Yaw ±π sarması: kısa yoldan
+  const w = makeCar(tr, 0, 0, 0);
+  w.placeAt(new THREE.Vector3(0, 0, 0), Math.PI - 0.01);
+  w.update(DT, input({ throttle: 0 }), tr);
+  w.yaw = -Math.PI + 0.01; // fizik adımı sarmayı geçmiş gibi
+  w.update(DT, input({ throttle: 0 }), tr);
+  w.interpolate(0.5);
+  const wy = Math.abs(new THREE.Euler().setFromQuaternion(w.mesh.quaternion, 'YXZ').y);
+  check('yaw ara değeri ±π sarmasında kısa yoldan (ters dönmez)', wy > 3.0, `|yaw| ${wy.toFixed(3)}`);
+  // Teker dönüşü ara değerli
+  const sp0 = car.parts.frontWheels[0].rotation.x;
+  car.update(DT, input(), tr);
+  car.interpolate(0);
+  const a0 = car.parts.frontWheels[0].rotation.x;
+  car.interpolate(1);
+  const a1 = car.parts.frontWheels[0].rotation.x;
+  car.interpolate(0.5);
+  const am = car.parts.frontWheels[0].rotation.x;
+  const unwrap = (x, ref) => x + Math.round((ref - x) / (2 * Math.PI)) * 2 * Math.PI;
+  check('teker dönüşü ara değerli', Math.abs(unwrap(am, a0) - (a0 + unwrap(a1, a0)) / 2) < 1e-6 && Math.abs(unwrap(a1, a0) - a0) > 0.1, `${a0.toFixed(3)} → ${a1.toFixed(3)}`);
+  void sp0;
+  // Işınlanma: placeAt ara değer atlar
+  const far = new THREE.Vector3(500, 0, 900);
+  car.placeAt(far, 1);
+  car.update(DT, input(), tr);
+  car.interpolate(0.1);
+  check('placeAt sonrası ara değer atlar (ışınlanma çizgisi yok)', car.mesh.position.distanceTo(car.position) < 1e-6 && car.mesh.position.distanceTo(far) < 1);
+  // Respawn
+  const tt = new TestTrack(null);
+  const rc = makeCar(tt, 500, 0, 150);
+  rc.wreck('takedown');
+  let snapOk = false;
+  let sawRespawn = false;
+  for (let i = 0; i < 60 * 3 && !sawRespawn; i++) {
+    rc.update(DT, input(), tt);
+    if (rc.events.some((e) => e.type === 'respawn')) {
+      sawRespawn = true;
+      rc.interpolate(0);
+      snapOk = rc.mesh.position.distanceTo(rc.position) < 1e-6;
+    }
+    rc.events.length = 0;
+  }
+  check('respawn adımında ara değer atlar', sawRespawn && snapOk);
 }
 
 // ---------------------------------------------------------------------------------------------
