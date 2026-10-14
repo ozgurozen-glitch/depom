@@ -150,6 +150,7 @@ export function buildStreet(ctx) {
     const id = track.sectionAt(s);
     if (Math.abs(s) < 14 || Math.abs(s - L) < 14) continue;
     if (id === 'chinatown') continue; // fenerler var
+    if (id === 'sukhumvit') continue; // BTS viyadüğünün altı: alt ışık şeritleri aydınlatır
     if (elevated(s)) continue; // otoyolda ayrı (aşağıda)
     const side = Math.round(s / 34) % 2 === 0 ? 1 : -1;
     if (id === 'river' && side < 0) { addLamp(s, -1, 13.2); continue; }

@@ -44,8 +44,10 @@ export class BangkokEnvironment {
     this.time = 0;
     scene.fog = new THREE.FogExp2(FOG_COLOR.clone(), FOG_DENSITY);
 
+    const t0 = performance.now();
     this.bakeSky();
     this.buildEnvironmentMap();
+    const skyMs = Math.round(performance.now() - t0);
 
     // Işıklar: gece yarıküresi + ay (gölgeli) + 3 hareketli nokta ışığı
     this.hemi = new THREE.HemisphereLight(0x4a54a0, 0x2a1a24, 0.9);
@@ -82,18 +84,34 @@ export class BangkokEnvironment {
     group.name = 'bangkok-scenery';
     scene.add(group);
     this.group = group;
+    // Kurulum süreleri (ms) — this.stats.timing'de (test/ayar için)
+    const timing = { sky: skyMs };
+    let tPrev = performance.now();
+    const lap = (name) => {
+      const t = performance.now();
+      timing[name] = Math.round(t - tPrev);
+      tPrev = t;
+    };
     const ctx = createContext(track, group);
+    lap('context');
     this.temple = buildTemple(ctx);
     this.bts = buildBts(ctx);
     const xw = buildExpressway(ctx);
     ctx.expresswayLamps = xw.lampSpots;
     buildGantry(ctx);
+    lap('landmarks');
     const city = buildCity(ctx);
+    lap('city');
     this.river = buildRiver(ctx);
+    lap('river');
     buildStreet(ctx);
+    lap('street');
     this.city = city.finalize();
+    lap('cityMeshes');
     this.lightSpots = thinSpots(ctx.lightSpots, track.length, 48);
-    this.stats = { buildings: city.buildings.length, signs: city.signs.length, lightSpots: this.lightSpots.length, streaks: ctx.streaks.length };
+    this.stats = {
+      buildings: city.buildings.length, signs: city.signs.length, lightSpots: this.lightSpots.length, streaks: ctx.streaks.length, timing,
+    };
 
     this.drizzle = createDrizzle(LOW_SPEC ? 700 : 1600);
     scene.add(this.drizzle.mesh);
