@@ -11,6 +11,14 @@ const MAP_INTERVAL = 1000 / 30;
 const NOTE_TIME = 1500;      // ms: kuyruk boşken bildirim süresi
 const NOTE_TIME_BUSY = 900;  // ms: kuyrukta bekleyen varken
 const NOTE_QUEUE_MAX = 4;
+const SLIP_TIMEOUT = 3000;   // ms: slipstream_end gelmese bile gösterge bu süre sonra kendiliğinden gizlenir
+const CAM_TIME = 1500;       // ms: kamera bilgi rozetinin görünme süresi
+const CAM_LABELS = { chase: 'TAKİP', far: 'UZAK', hood: 'KAPUT', bumper: 'TAMPON' };
+const STAT_DEFS = [['speed', 'HIZ'], ['accel', 'İVME'], ['handling', 'YOL TUTUŞ'], ['nitro', 'NITRO']];
+const TRACK_SWITCH_DELAY = 60; // ms: "yükleniyor" durumu çizilsin diye onChange'i bu kadar geciktir
+const CHEVRON_L = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M15 4 7 12l8 8" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const CHEVRON_R = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9 4 8 8-8 8" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const CAM_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 8.5A2.5 2.5 0 0 1 5.5 6h2l1.4-2h6.2l1.4 2h2A2.5 2.5 0 0 1 21 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.6" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -139,13 +147,21 @@ export class HUD {
 
     this.vigHeld = false;
 
+    this.slipOn = false;
+    this.slipUntil = 0;
+    this.camOn = false;
+    this.camUntil = 0;
+
     this.menu = null;
     this.menuStart = null;
+    this.garage = null;
     this.pause = null;
     this.pauseResume = null;
     this.pauseRestart = null;
+    this.pauseMenu = null;
     this.results = null;
     this.resultsRestart = null;
+    this.resultsMenu = null;
     this.resultsAt = 0;
 
     this.onKey = this.onKey.bind(this);
@@ -189,7 +205,9 @@ export class HUD {
         </div>
       </div></div>
       <div class="nr-map"><canvas></canvas></div>
+      <div class="nr-camview"><span class="nr-camview-ico">${CAM_ICON}</span><span class="nr-camview-k">KAMERA:</span><b class="nr-camview-v"></b></div>
       <div class="nr-speedo">
+        <div class="nr-slip" aria-hidden="true"><span class="nr-slip-chev"><i></i><i></i><i></i></span><span class="nr-slip-text" lang="en">SLIPSTREAM</span></div>
         <div class="nr-gauge">${gaugeSvg()}
           <div class="nr-speed"><div class="nr-speed-num nr-num">0</div><div class="nr-speed-unit">KM/SA</div></div>
         </div>
@@ -221,6 +239,9 @@ export class HUD {
     this.nitroPct = q('.nr-nitro-pct');
     this.burst = q('.nr-burst');
     this.burstMark = q('.nr-burst-mark');
+    this.slipEl = q('.nr-slip');
+    this.camEl = q('.nr-camview');
+    this.camValEl = q('.nr-camview-v');
   }
 
   // ---------------------------------------------------------------- minimap
@@ -369,13 +390,6 @@ export class HUD {
     this.totalCars = s.totalCars;
     const c = this.cache;
 
-    if (this.menu && (c.menuLaps !== s.totalLaps || c.menuCars !== s.totalCars)) {
-      c.menuLaps = s.totalLaps;
-      c.menuCars = s.totalCars;
-      const info = this.menu.querySelector('.nr-track-info');
-      if (info) info.textContent = `${s.totalLaps} TUR · ${s.totalCars} ARABA`;
-    }
-
     const raceVisible = s.state !== 'menu' && !this.results;
     if (raceVisible !== c.raceVisible) {
       c.raceVisible = raceVisible;
@@ -390,6 +404,8 @@ export class HUD {
 
     this.updateWreck(s);
     this.updateNotes(now);
+    if (this.slipOn && (now >= this.slipUntil || !raceVisible)) this.setSlip(false);
+    if (this.camOn && (now >= this.camUntil || !raceVisible)) this.setCamView(null);
     if (!raceVisible) return;
 
     // Sıra + tur
@@ -567,6 +583,15 @@ export class HUD {
       case 'near_miss':
         if (isMe) this.notify('NEAR MISS', { tone: 'white', priority: 0, key: 'near', small: true });
         break;
+      case 'slipstream_start':
+        if (isMe) this.setSlip(true);
+        break;
+      case 'slipstream_end':
+        if (isMe) this.setSlip(false);
+        break;
+      case 'camera_view':
+        if (isMe) this.setCamView(evt.view);
+        break;
       case 'pickup':
         if (isMe) this.notify('+NITRO', { tone: 'nitro', priority: 0, key: 'pickup', small: true });
         break;
@@ -594,6 +619,39 @@ export class HUD {
       default:
         break;
     }
+  }
+
+  // Slipstream göstergesi: start'ta açılır, end'de ya da SLIP_TIMEOUT boyunca olay gelmezse kapanır.
+  setSlip(on) {
+    this.slipUntil = on ? performance.now() + SLIP_TIMEOUT : 0;
+    if (on === this.slipOn) return;
+    this.slipOn = on;
+    this.slipEl.classList.toggle('nr-slip-on', on);
+  }
+
+  // Kamera bilgi rozeti: view verilirse "KAMERA: <ad>" gösterir, null ise gizler.
+  setCamView(view) {
+    if (!view) {
+      if (this.camOn) {
+        this.camOn = false;
+        this.camEl.classList.remove('nr-camview-on');
+      }
+      return;
+    }
+    const label = CAM_LABELS[view] || upper(view);
+    if (label !== this.cache.camLabel) {
+      this.cache.camLabel = label;
+      this.camValEl.textContent = label;
+    }
+    this.camUntil = performance.now() + CAM_TIME;
+    if (!this.camOn) {
+      this.camOn = true;
+      this.camEl.classList.add('nr-camview-on');
+    }
+    animate(this.camEl, [
+      { transform: 'skewX(-8deg) scale(1.14)' },
+      { transform: 'skewX(-8deg) scale(1)' },
+    ], { duration: 200, easing: 'ease-out' });
   }
 
   notify(text, { sub = '', tone = 'cyan', priority = 1, key = null, small = false } = {}) {
@@ -735,65 +793,360 @@ export class HUD {
     }
   }
 
-  // ---------------------------------------------------------------- menü
+  // ---------------------------------------------------------------- menü (garaj)
 
-  showMenu({ trackName, carName, onStart } = {}) {
+  // data: { trackName, carName, tracks, cars, colors, difficulties, selection, onChange(sel), onStart(sel) }
+  // tracks/cars verilmezse (eski çağrı) tek seçenekli salt-okunur garaj kurulur.
+  showMenu(data = {}) {
     this.removeMenu();
     const touch = isCoarsePointer();
-    const menu = el('div', 'nr-menu');
-    menu.innerHTML = `
-      <div class="nr-menu-inner">
-        <div class="nr-logo" role="heading" aria-level="1" aria-label="Nitro Rush">
-          <span class="nr-logo-a">NITRO</span><span class="nr-logo-b">RUSH</span>
-          <div class="nr-logo-stripe"></div>
-        </div>
-        <div class="nr-tag">ARCADE STREET RACING</div>
-        <div class="nr-cards">
-          <div class="nr-card nr-panel"><div class="nr-unskew">
-            <div class="nr-card-k">PİST</div><div class="nr-card-v nr-track-name" lang="en"></div>
-            <div class="nr-card-s nr-track-info">&nbsp;</div>
-          </div></div>
-          <div class="nr-card nr-card-car nr-panel"><div class="nr-unskew">
-            <div class="nr-card-k">ARABA</div><div class="nr-card-v nr-car-name" lang="en"></div>
-            <div class="nr-card-s">SEÇİLİ ARABA</div>
-          </div></div>
-        </div>
-        <button class="nr-btn nr-btn-pulse interactive" type="button"><span>YARIŞA BAŞLA</span></button>
-        <div class="nr-help">${touch ? `
-          <span class="nr-help-keys"><span class="nr-key">◀</span><span class="nr-key">▶</span></span><span>Sol alttaki düğmelerle direksiyon</span>
-          <span class="nr-help-keys"><span class="nr-key">N</span><span class="nr-key">D</span></span><span>Sağ alt: nitro ve drift/fren · dolu barda çift dokun = shockwave</span>
-          <span class="nr-help-keys"><span class="nr-key">II</span></span><span>Sağ üstteki düğmeyle duraklat</span>` : `
-          <span class="nr-help-keys"><span class="nr-key">←</span><span class="nr-key">→</span></span><span>Direksiyon</span>
-          <span class="nr-help-keys"><span class="nr-key">↓</span><span class="nr-key">Space</span></span><span>Drift / fren</span>
-          <span class="nr-help-keys"><span class="nr-key">↑</span><span class="nr-key">Shift</span></span><span>Nitro · dolu barda çift bas = shockwave</span>
-          <span class="nr-help-keys"><span class="nr-key">P</span><span class="nr-key">R</span><span class="nr-key">M</span></span><span>Duraklat · yeniden başlat · ses</span>`}
-        </div>
-        ${touch ? '' : '<div class="nr-hint">ENTER / SPACE İLE BAŞLA</div>'}
-      </div>`;
-    menu.querySelector('.nr-track-name').textContent = trackName || '';
-    menu.querySelector('.nr-car-name').textContent = carName || '';
-    if (this.totalLaps && this.totalCars) {
-      menu.querySelector('.nr-track-info').textContent = `${this.totalLaps} TUR · ${this.totalCars} ARABA`;
-    }
-    let fired = false;
-    this.menuStart = () => {
-      if (fired) return;
-      fired = true;
-      if (typeof onStart === 'function') onStart();
+    const tracks = Array.isArray(data.tracks) && data.tracks.length
+      ? data.tracks
+      : [{ id: null, name: data.trackName || '', subtitle: '', laps: this.totalLaps || 0, record: null }];
+    const cars = Array.isArray(data.cars) && data.cars.length
+      ? data.cars
+      : [{ id: null, name: data.carName || '', class: '', stats: null, color: null }];
+    const colors = Array.isArray(data.colors) ? data.colors : [];
+    const diffs = Array.isArray(data.difficulties) ? data.difficulties : [];
+    const given = data.selection || {};
+    const defDiff = diffs.find((d) => d.id === 'normal') || diffs[0];
+    const sel = {
+      trackId: tracks.some((t) => t.id === given.trackId) ? given.trackId : tracks[0].id,
+      carId: cars.some((c) => c.id === given.carId) ? given.carId : cars[0].id,
+      color: given.color ?? null,
+      difficulty: diffs.some((d) => d.id === given.difficulty) ? given.difficulty : (defDiff ? defDiff.id : null),
     };
-    menu.querySelector('.nr-btn').addEventListener('click', () => this.menuStart && this.menuStart());
+    const g = {
+      tracks, cars, colors, diffs, sel, touch,
+      onChange: typeof data.onChange === 'function' ? data.onChange : null,
+      onStart: typeof data.onStart === 'function' ? data.onStart : null,
+      timer: 0, dirty: false, busy: false, fired: false, carDir: 1,
+      cache: {}, els: {},
+    };
+    this.garage = g;
+
+    const menu = el('div', 'nr-menu');
+    const panel = el('div', 'nr-garage interactive');
+    menu.appendChild(panel);
+
+    // Üst: logo
+    const head = el('div', 'nr-garage-head');
+    const logo = el('div', 'nr-logo nr-garage-logo');
+    logo.setAttribute('role', 'heading');
+    logo.setAttribute('aria-level', '1');
+    logo.setAttribute('aria-label', 'Nitro Rush');
+    logo.append(el('span', 'nr-logo-a', 'NITRO'), el('span', 'nr-logo-b', 'RUSH'));
+    head.appendChild(logo);
+    head.appendChild(el('div', 'nr-garage-title', 'GARAJ'));
+    panel.appendChild(head);
+
+    const body = el('div', 'nr-garage-body');
+    panel.appendChild(body);
+    const section = (label, cls) => {
+      const wrap = el('section', `nr-garage-sec ${cls || ''}`);
+      wrap.appendChild(el('div', 'nr-garage-k', label));
+      body.appendChild(wrap);
+      return wrap;
+    };
+
+    // Pist kartları
+    const secTrack = section('PİST', 'nr-garage-sec-track');
+    const trackList = el('div', 'nr-garage-tracks');
+    trackList.setAttribute('role', 'radiogroup');
+    trackList.setAttribute('aria-label', 'Pist');
+    g.els.tracks = tracks.map((t) => {
+      const b = el('button', 'nr-garage-track nr-panel interactive');
+      b.type = 'button';
+      b.setAttribute('role', 'radio');
+      const inner = el('span', 'nr-garage-track-in nr-unskew');
+      const name = el('span', 'nr-garage-track-name', t.name || '');
+      name.lang = 'en';
+      inner.appendChild(name);
+      inner.appendChild(el('span', 'nr-garage-track-sub', t.subtitle || ''));
+      const meta = el('span', 'nr-garage-track-meta');
+      meta.appendChild(el('span', 'nr-garage-chip', `${t.laps || '-'} TUR`));
+      const has = Boolean(t.record) && Number.isFinite(t.record.bestTime);
+      const rec = el('span', `nr-garage-rec${has ? ' nr-garage-has' : ''}`);
+      rec.append(has ? 'EN İYİ ' : 'REKOR YOK');
+      if (has) rec.appendChild(el('b', 'nr-num', fmtTime(t.record.bestTime)));
+      meta.appendChild(rec);
+      inner.appendChild(meta);
+      b.appendChild(inner);
+      b.addEventListener('click', (e) => {
+        if (e.detail > 0) b.blur();
+        this.garagePick('trackId', t.id);
+      });
+      trackList.appendChild(b);
+      return b;
+    });
+    secTrack.appendChild(trackList);
+
+    // Araç seçimi
+    const secCar = section('ARAÇ', 'nr-garage-sec-car');
+    const carRow = el('div', 'nr-garage-carrow');
+    const mkArrow = (cls, svg, label, dir) => {
+      const b = el('button', `nr-garage-arrow ${cls} interactive`);
+      b.type = 'button';
+      b.setAttribute('aria-label', label);
+      const i = el('span', 'nr-garage-arrow-in');
+      i.innerHTML = svg;
+      b.appendChild(i);
+      b.addEventListener('click', (e) => {
+        if (e.detail > 0) b.blur();
+        this.garageStepCar(dir);
+      });
+      return b;
+    };
+    const prev = mkArrow('nr-garage-prev', CHEVRON_L, 'Önceki araç', -1);
+    const next = mkArrow('nr-garage-next', CHEVRON_R, 'Sonraki araç', 1);
+    const info = el('div', 'nr-garage-carinfo');
+    g.els.carClass = el('div', 'nr-garage-carclass');
+    g.els.carName = el('div', 'nr-garage-carname');
+    g.els.carName.lang = 'en';
+    info.append(g.els.carClass, g.els.carName);
+    carRow.append(prev, info, next);
+    if (cars.length < 2) {
+      prev.disabled = true;
+      next.disabled = true;
+      carRow.classList.add('nr-garage-single');
+    }
+    secCar.appendChild(carRow);
+    const stats = el('div', 'nr-garage-stats');
+    g.els.stats = STAT_DEFS.map(([key, label], i) => {
+      const row = el('div', 'nr-garage-stat');
+      const bar = el('div', 'nr-garage-bar');
+      const fill = el('div', 'nr-garage-fill');
+      fill.style.transitionDelay = `${i * 70}ms`;
+      bar.append(fill, el('div', 'nr-garage-seg'));
+      const val = el('span', 'nr-garage-stat-v nr-num', '0');
+      row.append(el('span', 'nr-garage-stat-k', label), bar, val);
+      stats.appendChild(row);
+      return { key, fill, val };
+    });
+    secCar.appendChild(stats);
+    if (!touch && cars.length > 1) secCar.appendChild(el('div', 'nr-garage-tip', '← → TUŞLARIYLA ARAÇ DEĞİŞTİR'));
+
+    // Boya
+    if (colors.length) {
+      const secPaint = section('BOYA', 'nr-garage-sec-paint');
+      const sw = el('div', 'nr-garage-swatches');
+      sw.setAttribute('role', 'radiogroup');
+      sw.setAttribute('aria-label', 'Boya');
+      g.els.swatches = colors.map((c) => {
+        const css = cssColor(c);
+        const b = el('button', 'nr-garage-swatch interactive');
+        b.type = 'button';
+        b.setAttribute('role', 'radio');
+        b.setAttribute('aria-label', `Boya ${css}`);
+        b.style.setProperty('--sw', css);
+        b.addEventListener('click', (e) => {
+          if (e.detail > 0) b.blur();
+          this.garagePick('color', c);
+        });
+        sw.appendChild(b);
+        return { b, css };
+      });
+      secPaint.appendChild(sw);
+    }
+
+    // Zorluk
+    if (diffs.length) {
+      const secDiff = section('ZORLUK', 'nr-garage-sec-diff');
+      const seg = el('div', 'nr-garage-segctl');
+      seg.setAttribute('role', 'radiogroup');
+      seg.setAttribute('aria-label', 'Zorluk');
+      g.els.diffs = diffs.map((d) => {
+        const b = el('button', 'nr-garage-diff interactive');
+        b.type = 'button';
+        b.setAttribute('role', 'radio');
+        b.appendChild(el('span', '', d.name));
+        b.addEventListener('click', (e) => {
+          if (e.detail > 0) b.blur();
+          this.garagePick('difficulty', d.id);
+        });
+        seg.appendChild(b);
+        return { b, id: d.id };
+      });
+      secDiff.appendChild(seg);
+    }
+
+    // Kontrol yardımı (dar/alçak ekranda panelin içinde, geniş ekranda sağ altta)
+    body.appendChild(this.garageHelp(touch, 'nr-garage-help-in'));
+    menu.appendChild(this.garageHelp(touch, 'nr-garage-help-side'));
+
+    // Alt: başlat
+    const foot = el('div', 'nr-garage-foot');
+    const start = el('button', 'nr-btn nr-btn-pulse nr-garage-start interactive');
+    start.type = 'button';
+    g.els.startText = el('span', '', 'YARIŞA BAŞLA');
+    start.appendChild(g.els.startText);
+    start.addEventListener('click', (e) => {
+      if (e.detail > 0) start.blur();
+      if (this.menuStart) this.menuStart();
+    });
+    g.els.start = start;
+    foot.appendChild(start);
+    if (!touch) foot.appendChild(el('div', 'nr-hint', 'ENTER İLE BAŞLA'));
+    panel.appendChild(foot);
+
+    this.menuStart = () => this.garageStart();
     this.el.appendChild(menu);
     this.menu = menu;
-    this.cache.menuLaps = null;
-    animate(menu.querySelector('.nr-menu-inner'), [
+    // Önce 0 değerleriyle çiz, sonra doldur: istatistik çubukları animasyonla dolsun.
+    this.syncGarage(true);
+    void menu.offsetWidth; // eslint-disable-line no-void
+    this.syncGarage(false);
+    animate(panel, [
       { opacity: 0, transform: 'translateX(-40px)' },
       { opacity: 1, transform: 'translateX(0)' },
     ], { duration: 450, easing: 'cubic-bezier(.2,.8,.2,1)' });
   }
 
+  garageHelp(touch, cls) {
+    const help = el('div', `nr-help ${cls}`);
+    help.innerHTML = touch ? `
+      <span class="nr-help-keys"><span class="nr-key">◀</span><span class="nr-key">▶</span></span><span>Sol alttaki düğmelerle direksiyon</span>
+      <span class="nr-help-keys"><span class="nr-key">N</span><span class="nr-key">D</span></span><span>Sağ alt: nitro ve drift/fren · dolu barda çift dokun = shockwave</span>
+      <span class="nr-help-keys"><span class="nr-key">II</span></span><span>Sağ üstteki düğmeyle duraklat</span>
+      <span class="nr-help-keys"><span class="nr-key">C</span></span><span>Üstteki kamera düğmesiyle kamera görünümü</span>` : `
+      <span class="nr-help-keys"><span class="nr-key">←</span><span class="nr-key">→</span></span><span>Direksiyon</span>
+      <span class="nr-help-keys"><span class="nr-key">↓</span><span class="nr-key">Space</span></span><span>Drift / fren</span>
+      <span class="nr-help-keys"><span class="nr-key">↑</span><span class="nr-key">Shift</span></span><span>Nitro · dolu barda çift bas = shockwave</span>
+      <span class="nr-help-keys"><span class="nr-key">C</span></span><span>Kamera görünümü (takip · uzak · kaput · tampon)</span>
+      <span class="nr-help-keys"><span class="nr-key">P</span><span class="nr-key">R</span><span class="nr-key">M</span></span><span>Duraklat · yeniden başlat · ses</span>`;
+    return help;
+  }
+
+  // Seçimde tek bir alan değişti (pist / araç / boya / zorluk).
+  garagePick(field, value) {
+    const g = this.garage;
+    if (!g || g.sel[field] === value) return;
+    g.sel[field] = value;
+    // Pist değişimi yüklemeyi bloklar: önce "yükleniyor" çizilsin, sonra onChange çalışsın.
+    if (field === 'trackId') this.setGarageBusy(true);
+    this.syncGarage(false);
+    this.queueGarageChange();
+  }
+
+  garageStepCar(dir) {
+    const g = this.garage;
+    if (!g || g.cars.length < 2) return;
+    const i = Math.max(0, g.cars.findIndex((c) => c.id === g.sel.carId));
+    const n = g.cars.length;
+    g.carDir = dir;
+    this.garagePick('carId', g.cars[(i + dir + n) % n].id);
+  }
+
+  queueGarageChange() {
+    const g = this.garage;
+    if (!g) return;
+    g.dirty = true;
+    if (g.timer) return; // zamanlayıcı tetiklendiğinde en güncel seçim gönderilir
+    g.timer = setTimeout(() => {
+      g.timer = 0;
+      this.flushGarageChange();
+    }, g.busy ? TRACK_SWITCH_DELAY : 0);
+  }
+
+  flushGarageChange() {
+    const g = this.garage;
+    if (!g) return;
+    if (g.timer) {
+      clearTimeout(g.timer);
+      g.timer = 0;
+    }
+    if (g.dirty) {
+      g.dirty = false;
+      if (g.onChange) g.onChange({ ...g.sel });
+    }
+    if (g.busy) requestAnimationFrame(() => { if (this.garage === g) this.setGarageBusy(false); });
+  }
+
+  setGarageBusy(busy) {
+    const g = this.garage;
+    if (!g || g.busy === busy) return;
+    g.busy = busy;
+    g.els.start.classList.toggle('nr-garage-busy', busy);
+    g.els.start.setAttribute('aria-busy', busy ? 'true' : 'false');
+    g.els.startText.textContent = busy ? 'YÜKLENİYOR…' : 'YARIŞA BAŞLA';
+  }
+
+  garageStart() {
+    const g = this.garage;
+    if (!g || g.fired || g.busy) return;
+    g.fired = true;
+    if (g.timer) {
+      clearTimeout(g.timer);
+      g.timer = 0;
+    }
+    g.dirty = false; // onStart(sel) seçimi zaten uygular
+    if (g.onStart) g.onStart({ ...g.sel });
+  }
+
+  // DOM'u yalnızca değişen değerlerde günceller. zero=true: çubukları 0'da tut (giriş animasyonu için).
+  syncGarage(zero) {
+    const g = this.garage;
+    if (!g) return;
+    const c = g.cache;
+    const sel = g.sel;
+
+    g.els.tracks.forEach((b, i) => {
+      const on = g.tracks[i].id === sel.trackId;
+      if (c[`t${i}`] === on) return;
+      c[`t${i}`] = on;
+      b.classList.toggle('nr-garage-on', on);
+      b.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+
+    const car = g.cars.find((x) => x.id === sel.carId) || g.cars[0];
+    if (c.car !== car) {
+      const first = c.car === undefined;
+      c.car = car;
+      const idx = g.cars.indexOf(car);
+      g.els.carName.textContent = car.name || '';
+      const count = g.cars.length > 1 ? `${idx + 1}/${g.cars.length}` : '';
+      g.els.carClass.textContent = [car.class, count].filter(Boolean).join(' · ');
+      if (!first) {
+        animate(g.els.carName, [
+          { opacity: 0, transform: `translateX(${18 * g.carDir}px)` },
+          { opacity: 1, transform: 'translateX(0)' },
+        ], { duration: 240, easing: 'cubic-bezier(.2,.8,.2,1)' });
+      }
+    }
+    for (const st of g.els.stats) {
+      const raw = zero ? 0 : Number(car.stats && car.stats[st.key]);
+      const v = Math.round(Math.max(0, Math.min(1, Number.isFinite(raw) ? raw : 0)) * 100);
+      if (c[`s${st.key}`] === v) continue;
+      c[`s${st.key}`] = v;
+      st.fill.style.transform = `scaleX(${v / 100})`;
+      st.val.textContent = String(v);
+    }
+
+    if (g.els.swatches) {
+      const eff = cssColor(sel.color ?? car.color ?? '');
+      for (const sw of g.els.swatches) {
+        const on = sw.css === eff;
+        if (c[`w${sw.css}`] === on) continue;
+        c[`w${sw.css}`] = on;
+        sw.b.classList.toggle('nr-garage-on', on);
+        sw.b.setAttribute('aria-checked', on ? 'true' : 'false');
+      }
+    }
+    if (g.els.diffs) {
+      for (const d of g.els.diffs) {
+        const on = d.id === sel.difficulty;
+        if (c[`d${d.id}`] === on) continue;
+        c[`d${d.id}`] = on;
+        d.b.classList.toggle('nr-garage-on', on);
+        d.b.setAttribute('aria-checked', on ? 'true' : 'false');
+      }
+    }
+  }
+
   hideMenu() {
     const menu = this.menu;
     if (!menu) return;
+    this.clearGarage();
     this.menu = null;
     this.menuStart = null;
     const anim = animate(menu, [{ opacity: 1 }, { opacity: 0 }], { duration: 260, easing: 'ease-out', fill: 'forwards' });
@@ -803,18 +1156,25 @@ export class HUD {
 
   removeMenu() {
     if (this.menu) this.menu.remove();
+    this.clearGarage();
     this.menu = null;
     this.menuStart = null;
   }
 
+  clearGarage() {
+    if (this.garage && this.garage.timer) clearTimeout(this.garage.timer);
+    this.garage = null;
+  }
+
   // ---------------------------------------------------------------- duraklatma
 
-  showPause(visible, { onResume, onRestart } = {}) {
+  showPause(visible, { onResume, onRestart, onMenu } = {}) {
     if (!visible) {
       if (this.pause) this.pause.remove();
       this.pause = null;
       this.pauseResume = null;
       this.pauseRestart = null;
+      this.pauseMenu = null;
       return;
     }
     if (!this.pause) {
@@ -825,11 +1185,13 @@ export class HUD {
           <div class="nr-btn-row">
             <button class="nr-btn nr-resume interactive" type="button"><span>DEVAM</span></button>
             <button class="nr-btn nr-btn-ghost nr-restart interactive" type="button"><span>YENİDEN BAŞLAT</span></button>
+            <button class="nr-btn nr-btn-ghost nr-pause-menu interactive" type="button"><span>ANA MENÜ</span></button>
           </div>
           <div class="nr-hint">P / ESC İLE DEVAM</div>
         </div>`;
       ov.querySelector('.nr-resume').addEventListener('click', () => this.pauseResume && this.pauseResume());
       ov.querySelector('.nr-restart').addEventListener('click', () => this.pauseRestart && this.pauseRestart());
+      ov.querySelector('.nr-pause-menu').addEventListener('click', () => this.pauseMenu && this.pauseMenu());
       this.el.appendChild(ov);
       this.pause = ov;
       animate(ov.querySelector('.nr-pause-box'), [
@@ -839,17 +1201,22 @@ export class HUD {
     }
     this.pauseResume = typeof onResume === 'function' ? onResume : null;
     this.pauseRestart = typeof onRestart === 'function' ? onRestart : null;
+    this.pauseMenu = typeof onMenu === 'function' ? onMenu : null;
+    this.pause.querySelector('.nr-pause-menu').classList.toggle('nr-hidden', !this.pauseMenu);
   }
 
   // ---------------------------------------------------------------- sonuçlar
 
-  showResults(rows, onRestart) {
+  // opts: { record: { newBestTime, newBestLap, bestTime, bestLap }, trackName, onMenu }
+  showResults(rows, onRestart, opts = {}) {
     if (this.results) {
       this.results.remove();
       this.results = null;
       this.resultsRestart = null;
+      this.resultsMenu = null;
     }
     if (!rows) return;
+    const { record = null, trackName = '', onMenu = null } = opts || {};
 
     const me = rows.find((r) => r.isPlayer) || null;
     const place = me ? me.place : null;
@@ -865,8 +1232,21 @@ export class HUD {
     const title = place === 1 ? 'ZAFER!' : place && place <= 3 ? 'PODYUM!' : 'YARIŞ BİTTİ';
     titles.appendChild(el('div', 'nr-res-title', title));
     titles.appendChild(el('div', 'nr-res-sub', place ? `${total} ARABA İÇİNDE ${place}. SIRA` : 'SONUÇLAR'));
+    if (trackName) {
+      const tn = el('div', 'nr-res-track', trackName);
+      tn.lang = 'en';
+      titles.appendChild(tn);
+    }
     head.appendChild(titles);
     box.appendChild(head);
+
+    const newRecord = Boolean(record && (record.newBestTime || record.newBestLap));
+    let badge = null;
+    if (newRecord) {
+      badge = el('div', 'nr-res-badge');
+      badge.appendChild(el('span', 'nr-res-badge-t', 'YENİ REKOR!'));
+      box.appendChild(badge);
+    }
 
     const table = el('div', 'nr-table');
     const rowEls = [];
@@ -882,11 +1262,21 @@ export class HUD {
     }
     box.appendChild(table);
 
-    if (me && me.bestLap !== null && me.bestLap !== undefined) {
-      const best = el('div', 'nr-res-best');
-      best.append('EN İYİ TUR ');
-      best.appendChild(el('b', 'nr-num', fmtTime(me.bestLap)));
-      box.appendChild(best);
+    // En iyi süre / tur (pist rekoru; yoksa bu yarışın değerleri)
+    const bestTime = record && Number.isFinite(record.bestTime) ? record.bestTime : (me && Number.isFinite(me.time) ? me.time : null);
+    const bestLap = record && Number.isFinite(record.bestLap) ? record.bestLap : (me && Number.isFinite(me.bestLap) ? me.bestLap : null);
+    if (bestTime !== null || bestLap !== null) {
+      const stats = el('div', 'nr-res-stats');
+      const chip = (label, value, isNew) => {
+        const c = el('div', `nr-res-stat${isNew ? ' nr-res-new' : ''}`);
+        c.appendChild(el('span', 'nr-res-stat-k', label));
+        c.appendChild(el('b', 'nr-num', fmtTime(value)));
+        if (isNew) c.appendChild(el('i', 'nr-res-stat-n', 'YENİ'));
+        stats.appendChild(c);
+      };
+      if (bestTime !== null) chip('EN İYİ SÜRE', bestTime, Boolean(record && record.newBestTime));
+      if (bestLap !== null) chip('EN İYİ TUR', bestLap, Boolean(record && record.newBestLap));
+      box.appendChild(stats);
     }
 
     const actions = el('div', 'nr-res-actions');
@@ -901,6 +1291,20 @@ export class HUD {
     };
     btn.addEventListener('click', () => this.resultsRestart && this.resultsRestart());
     actions.appendChild(btn);
+    if (typeof onMenu === 'function') {
+      const mbtn = el('button', 'nr-btn nr-btn-ghost interactive');
+      mbtn.type = 'button';
+      mbtn.appendChild(el('span', '', 'ANA MENÜ'));
+      this.resultsMenu = () => {
+        if (fired) return;
+        fired = true;
+        onMenu();
+      };
+      mbtn.addEventListener('click', () => this.resultsMenu && this.resultsMenu());
+      actions.appendChild(mbtn);
+    } else {
+      this.resultsMenu = null;
+    }
     box.appendChild(actions);
 
     this.el.appendChild(ov);
@@ -913,6 +1317,13 @@ export class HUD {
       { opacity: 0, transform: 'scale(1.6) skewX(-12deg)' },
       { opacity: 1, transform: 'scale(1) skewX(0deg)' },
     ], { duration: 420, easing: 'cubic-bezier(.2,.9,.3,1.2)' });
+    if (badge) {
+      animate(badge, [
+        { opacity: 0, transform: 'skewX(-12deg) scale(0.3)' },
+        { opacity: 1, transform: 'skewX(-12deg) scale(1.2)', offset: 0.6 },
+        { opacity: 1, transform: 'skewX(-12deg) scale(1)' },
+      ], { duration: 520, delay: 380, easing: 'cubic-bezier(.2,.9,.3,1.2)', fill: 'backwards' });
+    }
     rowEls.forEach((row, i) => {
       animate(row, [
         { opacity: 0, transform: 'translateX(60px) skewX(-12deg)' },
@@ -927,10 +1338,20 @@ export class HUD {
     if (e.repeat) return;
     const enter = e.code === 'Enter' || e.code === 'NumpadEnter';
     const space = e.code === 'Space';
-    if (this.menu && this.menuStart && (enter || space)) {
-      e.preventDefault();
-      this.menuStart();
-      return;
+    if (this.menu && this.garage) {
+      if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
+        e.preventDefault();
+        this.garageStepCar(e.code === 'ArrowLeft' ? -1 : 1);
+        return;
+      }
+      if (enter || space) {
+        // Odaktaki menü düğmesi kendi etkinleşmesini yapsın (klavyeyle Tab ile gezen için).
+        const a = document.activeElement;
+        if (a && a.tagName === 'BUTTON' && this.menu.contains(a)) return;
+        e.preventDefault();
+        if (this.menuStart) this.menuStart();
+        return;
+      }
     }
     if (this.results && this.resultsRestart && enter && performance.now() - this.resultsAt > 800) {
       e.preventDefault();
