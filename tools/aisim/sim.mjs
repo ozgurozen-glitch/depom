@@ -214,6 +214,9 @@ export async function runRace(opts) {
             break;
           case 'nitro_start':
             m.nitroStarts++;
+            if (evt.level === 'normal' || evt.level === 'shockwave') {
+              (m.nitroFree || (m.nitroFree = [])).push(e.driver.brakeFreeDistance(car.trackS, car.speed + 18, e.driver.aLatNow, e.driver.capNow));
+            }
             if (evt.level === 'perfect') m.perfect++;
             if (evt.level === 'shockwave') m.shock++;
             break;

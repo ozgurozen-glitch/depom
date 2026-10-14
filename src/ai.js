@@ -27,8 +27,10 @@ export const TUNING = {
   steerFilterTau: 0.1, // s, arabaya uygulanan direksiyonun tahmini (öğrenme için)
   latAccelBase: 24, // m/s², en düşük yetenekte viraj ivmesi
   latAccelSkill: 12, // m/s², yetenekle eklenen
+  cornerLane: 0, // viraj içinde şerit tercihinin payı (0 = yalnızca düzlükte)
   laneBias: 3, // m, preferredLane = ±1 düzlükte bu kadar yana kayar
   avoidBehind: 4.5, // m, arkada kalmış ama yanımızdaki arabayı da say
+  tightCorner: 1 / 70, // 90 m içinde bu eğrilikten sıkı viraj varsa öndekiyle mesafe koru
   alongside: 5, // m: bundan az önde (ya da arkada) olan araba 'yanımızda' sayılır
   avoidLatRate: 3.2, // m/s, kaçış sırasında varsayılan yanal hız (temas zamanı tahmini için)
   avoidLatLead: 0.5, // s, komşu arabanın yanal hızı bu süre kadar öne taşınır
@@ -192,6 +194,7 @@ export class BotDriver {
     this.chainOn = true;
     this.nitroPlanT = 0;
     this.freeD = 0;
+    this.rivalAhead = 1e9;
     this.shockPhase = 0;
     this.shockCooldown = 0;
     this.wasteT = 0;
@@ -205,6 +208,8 @@ export class BotDriver {
     this.stuckGrace = 0;
     this.wallT = 0;
     this.vTarget = 0;
+    this.aLatNow = this.latAccel;
+    this.capNow = this.capMargin;
     this.wasteNow = 0;
   }
 
@@ -264,12 +269,14 @@ export class BotDriver {
     // --- Lastik bant -------------------------------------------------------------------------------
     let boost = 0;
     let slow = 0;
+    let slowRaw = 0;
     const player = ctx.player;
     if (player && player !== car && !player.finished && !car.finished
       && Number.isFinite(player.raceDistance) && Number.isFinite(car.raceDistance)) {
       const gap = car.raceDistance - player.raceDistance; // + bot önde
       boost = Math.min(1, smooth01((-gap - P.rubberBehind[0]) / P.rubberBehind[1]) * P.rubberBoostMul);
-      slow = Math.min(1, smooth01((gap - P.rubberAhead[0]) / P.rubberAhead[1]) * P.rubberSlowMul);
+      slowRaw = smooth01((gap - P.rubberAhead[0]) / P.rubberAhead[1]);
+      slow = Math.min(1, slowRaw * P.rubberSlowMul);
     }
 
     // --- Gürültü (yetenek) ve hatalar ----------------------------------------------------------------
@@ -279,13 +286,15 @@ export class BotDriver {
 
     const aLat = this.latAccel * (1 + 0.08 * boost - 0.14 * slow);
     const capMargin = Math.min(0.97, this.capMargin + 0.04 * boost - 0.08 * slow);
+    this.aLatNow = aLat;
+    this.capNow = capMargin;
 
     // --- Yanal plan ---------------------------------------------------------------------------------
     const plannedLat = this.baseLatAt(s + 15);
     this.followSpeed = Infinity;
     this.updateAttack(dt, ctx, s, lat, vF, lim, kNear);
     this.updateOvertake(dt, ctx, s, lat, vF, lim, kNear);
-    this.updateAvoidance(dt, ctx, s, lat, vF, lim, plannedLat);
+    this.updateAvoidance(dt, ctx, s, lat, vF, lim, plannedLat, kNear);
     this.updateDefend(dt, ctx, s, lat, vF, lim, kNear);
     if (this.avoidActive && this.attackTarget && this.attackPhase !== 'ram') this.endAttack(2);
 
@@ -383,7 +392,7 @@ export class BotDriver {
     if (guard > 0.5) vTarget = Math.min(vTarget, Math.max(vF - 2 * guard, 14));
     if (this.followSpeed < vTarget) vTarget = this.followSpeed;
     if (this.squeezeSpeed < vTarget) vTarget = Math.max(this.squeezeSpeed, 0);
-    if (this.otState === OT_FOLLOW && this.otFollowSpeed < vTarget) vTarget = this.otFollowSpeed;
+    if (this.otState !== OT_NONE && this.otFollowSpeed < vTarget) vTarget = this.otFollowSpeed;
     if (this.attackTarget) vTarget = Math.min(vTarget, this.attackSpeed);
     this.vTarget = vTarget;
     let vCap = Infinity;
@@ -409,7 +418,7 @@ export class BotDriver {
     const drift = false;
 
     // --- Nitro -----------------------------------------------------------------------------------------
-    const nitro = this.updateNitro(dt, ctx, s, vF, aLat, capMargin, boost, slow, kNear, kHere0);
+    const nitro = this.updateNitro(dt, ctx, s, vF, aLat, capMargin, boost, slowRaw, kNear, kHere0);
 
     // --- Takılma kurtarma ------------------------------------------------------------------------------
     if (this.recoverT > 0) {
@@ -557,7 +566,8 @@ export class BotDriver {
     const line = this.line;
     const kap = Math.abs(line.curvatureAt(s));
     const straight = clamp(1 - kap * 150, 0, 1); // R ≥ 150 m'den itibaren şerit tercihi devreye girer
-    const l = line.lateralAt(s) * this.lineFollow + this.preferredLane * TUNING.laneBias * straight + this.wander;
+    const laneW = TUNING.cornerLane + (1 - TUNING.cornerLane) * straight; // virajda da biraz şerit tercihi (dağılma)
+    const l = line.lateralAt(s) * this.lineFollow + this.preferredLane * TUNING.laneBias * laneW + this.wander;
     const lim = Math.max(0, line.halfWidthAt(s) - TUNING.edge);
     return clamp(l, -lim, lim);
   }
@@ -694,7 +704,7 @@ export class BotDriver {
     }
 
     this.attackCheck -= dt;
-    if (this.attackCooldown > 0 || this.attackCheck > 0) return;
+    if (this.attackCooldown > 0 || this.attackCheck > 0 || this.raceClock < P.startCalm) return;
     this.attackCheck = 0.5;
     if (car.finished || vF < 25 || kNear > 1 / 160 || this.aggression <= 0 || P.attackMul <= 0) return;
     if (this.otState === OT_SWING) return;
@@ -785,14 +795,16 @@ export class BotDriver {
         this.otLat = clamp(v.lateral, -lim, lim);
         this.otFollowSpeed = v.speed + clamp((ds - 7) * 0.9, -4, 14) + 2;
         const straight = kNear < 1 / 110;
-        const swingDist = clamp(7 + closing * 0.55, 8.5, 17);
-        if (straight && ((ds <= swingDist && closing > 0.8) || ds <= 8.5 || (closing > 7 && ds < 22))) this.startSwing(v, ctx, s, lat, lim, ds);
+        const swingDist = clamp(9 + closing * 1.0, 11, 26);
+        if (straight && ((ds <= swingDist && closing > 0.8) || ds <= 11 || (closing > 7 && ds < 26))
+          && this.passRoom(s, vF, ds, closing)) this.startSwing(v, ctx, s, lat, lim, ds);
         else if (this.otT > 9 && closing < 0.5) this.endOvertake(4, 'noResult'); // sonuç yok: vazgeç
         return;
       }
       // SWING: seçilen tarafa bağlı kal
-      this.otLat = clamp(v.lateral + this.otSide * 3.5, -lim, lim);
-      this.otFollowSpeed = Infinity;
+      this.otLat = clamp(v.lateral + this.otSide * 3.6, -lim, lim);
+      // henüz onun şeridindeyken tamponuna binmeyelim: yanal açıklık oluşana dek hızını aşma
+      this.otFollowSpeed = Math.abs(lat - v.lateral) < 2.6 && ds > 2.5 ? v.speed + Math.max(0, ds - 6.5) * 0.8 : Infinity;
       if (Math.abs(this.otLat - v.lateral) < 2.5 && ds > 3) {
         // seçilen tarafta yer kalmadı: takibe dön (taraf değiştirmeden)
         this.otState = OT_FOLLOW;
@@ -809,7 +821,8 @@ export class BotDriver {
       return;
     }
 
-    if (this.otCooldown > 0 || P.slip <= 0 || this.attackTarget || car.finished || vF < 30 || kNear > 1 / 130) return;
+    if (this.otCooldown > 0 || P.slip <= 0 || this.attackTarget || car.finished || vF < 30 || kNear > 1 / 130
+      || this.raceClock < P.startCalm) return;
     this.otCheck -= dt;
     if (this.otCheck > 0) return;
     this.otCheck = 0.1;
@@ -841,6 +854,13 @@ export class BotDriver {
     this.otLat = best.lateral;
     this.otFollowSpeed = best.speed + 6;
     this.stats.follow++;
+  }
+
+  /** Sollamayı bitirecek kadar serbest yol (fren noktasına kadar) var mı? */
+  passRoom(s, vF, ds, closing) {
+    const passTime = Math.min(6, (ds + 11) / Math.max(closing, 1.5));
+    const need = Math.max(90, passTime * vF);
+    return this.brakeFreeDistance(s, vF + 6, this.aLatNow, this.capNow) >= need;
   }
 
   startSwing(v, ctx, s, lat, lim, ds) {
@@ -918,7 +938,7 @@ export class BotDriver {
     }
 
     if (P.defend <= 0 || this.defendCooldown > 0 || this.otState === OT_SWING || this.attackTarget || car.finished
-      || vF < 28 || kNear > 1 / 140) return;
+      || vF < 28 || kNear > 1 / 140 || this.raceClock < P.startCalm) return;
     this.defendCheck -= dt;
     if (this.defendCheck > 0) return;
     this.defendCheck = 0.3;
@@ -958,7 +978,7 @@ export class BotDriver {
   // ---------------------------------------------------------------------------------------------------
   // Sollama/kaçınma: önümüzdeki ~25 m'de yolumuzu kesen arabalar için yanal "yasak bantlar" çıkar,
   // planlanan çizgi bir banda düşüyorsa en ucuz boş yanal konumu seç; hiç yer yoksa takip et.
-  updateAvoidance(dt, ctx, s, lat, vF, lim, plannedLat) {
+  updateAvoidance(dt, ctx, s, lat, vF, lim, plannedLat, kNear) {
     const car = this.car;
     const L = this.line.trackLength;
     const myHalf = Number.isFinite(car.halfWidth) ? car.halfWidth : 1;
@@ -970,6 +990,8 @@ export class BotDriver {
     let laneMin = -1e9;
     let laneMax = 1e9;
     let squeeze = Infinity;
+    let cornerFollow = Infinity;
+    const tight = kNear > TUNING.tightCorner;
     const cars = ctx.cars;
     const handled = this.otState !== OT_NONE ? this.otTarget : null;
     for (let i = 0; i < cars.length; i++) {
@@ -979,6 +1001,11 @@ export class BotDriver {
       ds -= Math.round(ds / L) * L;
       if (!(ds >= -TUNING.avoidBehind)) continue; // arka tamponu hâlâ yanımızdaysa say
       const wrecked = c.wrecked;
+      // sıkı viraj girişinde öndekiyle mesafeyi koru (yan yana sıkışıp dönüşte çarpışmayı azaltır)
+      if (tight && ds >= 5 && ds <= 26 && !wrecked && c.ghost !== true && Math.abs(c.lateral - lat) < 4.5) {
+        const cs = c.speed - 0.5 + (ds - 9) * 0.5;
+        if (cs < cornerFollow) cornerFollow = cs;
+      }
       if (ds < TUNING.alongside) {
         // yanımızda (ya da tamponu yanımızda): şerit koruma. Hangi tarafındaysak orada kal; kenara sıkışırsak
         // arkadaki olan (bu arabanın önünde olan biz değilsek) yavaşlayıp geride kalır.
@@ -1022,7 +1049,7 @@ export class BotDriver {
     this.bandCount = count;
     this.laneMin = laneMin;
     this.laneMax = laneMax;
-    this.squeezeSpeed = squeeze;
+    this.squeezeSpeed = Math.min(squeeze, cornerFollow);
     if (this.avoidHold > 0) this.avoidHold -= dt;
 
     // planlanan çizgi (ve oraya giden yol) bir bandı kesiyor mu? En yakın engel "birincil" bant.
@@ -1179,7 +1206,7 @@ export class BotDriver {
   //   zor    → fren noktasına kadar serbest mesafeye bakar (viraj çıkışlarında da yakar, virajdan hemen önce yakmaz),
   //            perfect zincirini pencereye tam oturtur, bar doluyken yakında rakip varsa shockwave (çift basış) atar.
   //   kolay  → yüksek eşik, çoğu zaman zinciri kaçırır, ara sıra yanlış yerde yakar.
-  updateNitro(dt, ctx, s, vF, aLat, capMargin, boost, slow, kNear, kHere) {
+  updateNitro(dt, ctx, s, vF, aLat, capMargin, boost, slowRaw, kNear, kHere) {
     const car = this.car;
     const P = this.profile;
     let want = false;
@@ -1187,13 +1214,14 @@ export class BotDriver {
     let shock = false;
     if (this.shockCooldown > 0) this.shockCooldown -= dt;
     const burstOn = car.nitroActive;
-    if (!car.finished && slow < 0.3 && vF > 12 && this.recoverT <= 0) {
+    if (!car.finished && slowRaw < P.nitroRubber && vF > 12 && this.recoverT <= 0) {
       const threshold = P.nitroThreshold - 0.18 * boost + 0.1 * (1 - this.k);
       if (P.nitroSmart) {
         this.nitroPlanT -= dt;
         if (this.nitroPlanT <= 0) {
           this.nitroPlanT = 0.1;
           this.freeD = this.brakeFreeDistance(s, vF + 18, aLat, capMargin);
+          this.rivalAhead = this.nearestAhead(ctx, s, 170);
         }
         const needD = P.nitroNeed[0] * vF + P.nitroNeed[1];
         const gentle = kHere < 1 / 140;
@@ -1206,8 +1234,8 @@ export class BotDriver {
           chain = true;
         }
         if (P.shock > 0 && !this.attackTarget) shock = this.shockWanted(ctx, s, vF, kHere);
-        // shockwave için bar doldurmaya çalış: dolmaya yakınken normal patlamaları ertele (en çok ~35 s)
-        if (P.shock > 0 && !burstOn && car.nitro >= 0.7 && car.nitro < 0.995 && this.saveT < 35) {
+        // shockwave için bar doldurmaya çalış: yakında rakip varken, bar yarıdan fazlaysa normal patlamaları ertele
+        if (P.shock > 0 && !burstOn && car.nitro >= 0.55 && car.nitro < 0.995 && this.rivalAhead < 170 && this.saveT < 25) {
           this.saveT += dt;
           want = false;
         } else if (car.nitro < 0.5 || car.nitro >= 0.995) this.saveT = 0;
@@ -1305,21 +1333,28 @@ export class BotDriver {
     return hold;
   }
 
-  /** Zor zorluk: shockwave için uygun an mı? (düzlük + yakında rakip ya da çok uzun düzlük) */
-  shockWanted(ctx, s, vF, kHere) {
+  /** Önümüzdeki en yakın (devrilmemiş) arabaya olan mesafe (m), yoksa 1e9. */
+  nearestAhead(ctx, s, range) {
     const car = this.car;
-    if (car.nitro < 0.995 || car.nitroActive || this.shockCooldown > 0 || vF < 35) return false;
-    if (kHere > 1 / 200 || this.freeD < 190) return false;
     const L = this.line.trackLength;
     const cars = ctx.cars;
+    let best = 1e9;
     for (let i = 0; i < cars.length; i++) {
       const c = cars[i];
       if (!c || c === car || c.wrecked || c.ghost || c.finished || c.airborne) continue;
       let ds = c.trackS - s;
       ds -= Math.round(ds / L) * L;
-      if (ds > 6 && ds < 90) return true;
+      if (ds > 6 && ds < range && ds < best) best = ds;
     }
-    return this.freeD >= 300; // rakip yok ama çok uzun düzlük
+    return best;
+  }
+
+  /** Zor zorluk: shockwave için uygun an mı? (düzlük + yakında rakip) */
+  shockWanted(ctx, s, vF, kHere) {
+    const car = this.car;
+    if (car.nitro < 0.995 || car.nitroActive || this.shockCooldown > 0 || vF < 35) return false;
+    if (kHere > 1 / 200 || this.freeD < 140) return false;
+    return this.rivalAhead < 100;
   }
 
   rollChain() {

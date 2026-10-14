@@ -2,6 +2,7 @@
 //   node --import ./tools/aisim/register.mjs tools/aisim/scenarios.mjs [--track hard2] [--radius 8]
 import * as THREE from 'three';
 import { BotDriver } from '../../src/ai.js';
+import { CollisionSystem } from '../../src/collisions.js';
 import { getRacingLine } from '../../src/ai/racingLine.js';
 import { makeTrack } from './tracks.mjs';
 import { MODELS } from './sim.mjs';
@@ -120,6 +121,33 @@ for (const model of models) {
     });
     check(`${model}/${diff} respawn sonrası toparlanma`, respawnAt !== null && t100 !== null && t100 < 3, `respawn ${respawnAt && respawnAt.toFixed(1)} s, 100 km/s: ${t100 && t100.toFixed(1)} s, 200 km/s: ${t200 ? t200.toFixed(1) : '-'} s`);
   }
+}
+
+console.log('\n# Shockwave (zor): bar dolu, düzlükte 50-70 m önde rakip');
+for (const model of models) {
+  const diff = 'hard';
+  const env = await setup(model, diff, 'oval', 8);
+  const Car = await carClass(model);
+  const rival = new Car({ scene: env.scene, color: 0x00ff00, name: 'R', isPlayer: false });
+  place(env.track, env.car, 200, 0, 0, 55);
+  place(env.track, rival, 270, 0, 0, 45);
+  env.car.nitro = 1;
+  env.driver.raceClock = 30;
+  const cs = new CollisionSystem();
+  const cars = [env.car, rival];
+  let shockAt = null;
+  let takedownAt = null;
+  const noIn = { throttle: 0, brake: 0, steer: 0, nitro: false, drift: false };
+  for (let i = 0; i < 60 * 12; i++) {
+    const ctx = { cars, player: null, raceStarted: true };
+    env.car.update(DT, env.driver.getInput(DT, ctx), env.track);
+    rival.update(DT, { ...noIn, throttle: 0.6 }, env.track);
+    for (const e of cs.update(DT, cars, env.track)) if (e.type === 'takedown' && takedownAt === null) takedownAt = (i * DT).toFixed(1);
+    for (const e of env.car.events) if (e.type === 'nitro_start' && e.level === 'shockwave' && shockAt === null) shockAt = (i * DT).toFixed(1);
+    env.car.events.length = 0;
+    rival.events.length = 0;
+  }
+  check(`${model}/hard shockwave atar`, shockAt !== null, shockAt !== null ? `${shockAt} s, takedown: ${takedownAt || 'yok'}` : 'atmadı');
 }
 
 console.log(failures ? `\n${failures} senaryo BAŞARISIZ` : '\nTüm senaryolar geçti');

@@ -80,7 +80,7 @@ async function raceBlock(trackId) {
   const out = [];
   for (const diff of diffs) {
     let lapAll = [];
-    let totals = { wall: 0, hard: 0, wreck: 0, wreckWall: 0, wreckTd: 0, stuck: 0, reverse: 0, td: 0, wb: 0, wm: 0, wc: 0, tdI: 0, tdS: 0, tdA: 0, tdP: 0, attack: 0, follow: 0, swing: 0, shock: 0, lapse: 0, recover: 0, ot: {}, bump: 0, slip: 0, slipT: 0, def: 0, ovt: 0, fin: 0, tot: 0, us: [], plPlace: [] };
+    let totals = { wall: 0, hard: 0, wreck: 0, wreckWall: 0, wreckTd: 0, stuck: 0, reverse: 0, td: 0, nf: [], nStart: 0, nPerf: 0, nShock: 0, wb: 0, wm: 0, wc: 0, tdI: 0, tdS: 0, tdA: 0, tdP: 0, attack: 0, follow: 0, swing: 0, shock: 0, lapse: 0, recover: 0, ot: {}, bump: 0, slip: 0, slipT: 0, def: 0, ovt: 0, fin: 0, tot: 0, us: [], plPlace: [] };
     for (let r = 0; r < reps; r++) {
       const res = await runRace({ track: trackId, trackOpts, laps, difficulty: diff, bots, models, player: opt.player, maxTime: Number(opt.maxTime) });
       const bs = res.entries.filter((e) => e.bot);
@@ -96,6 +96,8 @@ async function raceBlock(trackId) {
       totals.wb += sumStat(bs, 'wallAfterBump');
       totals.wm += sumStat(bs, 'wallDuringManeuver');
       totals.wc += sumStat(bs, 'wallClean');
+      for (const e of bs) if (e.m.nitroFree) totals.nf.push(...e.m.nitroFree);
+      for (const e of bs) { totals.nStart += e.m.nitroStarts; totals.nPerf += e.m.perfect; totals.nShock += e.m.shock; }
       totals.tdI += sumStat(bs, 'tdIntent');
       totals.tdS += sumStat(bs, 'tdShock');
       totals.tdA += sumStat(bs, 'tdAccident');
@@ -116,7 +118,7 @@ async function raceBlock(trackId) {
     const nLaps = Math.max(1, lapAll.length);
     const t = totals;
     console.log(`${diff.padEnd(6)}  ${f2(mean(lapAll)).padStart(9)}  ${`${t.fin}/${t.tot}`.padStart(5)}  ${f1(t.wall / nLaps).padStart(9)}  ${String(t.hard).padStart(4)}  ${`${t.wreck}(${t.wreckWall}/${t.wreckTd})`.padStart(21)}  ${String(t.stuck).padStart(7)}  ${String(t.reverse).padStart(4)}  ${String(t.td).padStart(8)}  ${String(t.bump).padStart(4)}  ${String(t.slip).padStart(9)}  ${f1(t.slipT).padStart(11)}  ${String(t.def).padStart(7)}  ${String(t.ovt).padStart(7)}  ${f1(mean(t.us)).padStart(7)}  ${t.plPlace.join(',')}`);
-    console.log(`        sert duvar: bump sonrası ${t.wb} manevra sırasında ${t.wm} temiz ${t.wc}\n        takedown: kasıtlı ${t.tdI} shockwave ${t.tdS} kaza ${t.tdA} (oyuncuya ${t.tdP}) | saldırı ${t.attack} takip ${t.follow} sollama-başlangıç ${t.swing} shock ${t.shock} hata ${t.lapse} toparlanma ${t.recover}\n        sollama sonuçları: ${JSON.stringify(t.ot)}`);
+    console.log(`        nitro: patlama ${t.nStart} (perfect ${t.nPerf}, shock ${t.nShock}); ilk patlamada fren noktasına ort. ${f1(mean(t.nf))} m, <60 m olan %${f1((100 * t.nf.filter((x) => x < 60).length) / Math.max(1, t.nf.length))}\n        sert duvar: bump sonrası ${t.wb} manevra sırasında ${t.wm} temiz ${t.wc}\n        takedown: kasıtlı ${t.tdI} shockwave ${t.tdS} kaza ${t.tdA} (oyuncuya ${t.tdP}) | saldırı ${t.attack} takip ${t.follow} sollama-başlangıç ${t.swing} shock ${t.shock} hata ${t.lapse} toparlanma ${t.recover}\n        sollama sonuçları: ${JSON.stringify(t.ot)}`);
     out.push({ diff, mean: mean(lapAll), ...t });
   }
   return out;

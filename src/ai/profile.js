@@ -20,6 +20,7 @@ export const PROFILES = {
     lapseRate: 1 / 14, // 1/s
     lapseDur: [0.7, 1.5],
     // takedown / savunma / sollama
+    startCalm: 25, // s: yarış başı sakinliği (saldırı/sollama/savunma yok)
     attackMul: 0.25,
     attackNeedsPin: false,
     defend: 0,
@@ -38,6 +39,7 @@ export const PROFILES = {
     rubberAhead: [180, 200],
     rubberBoostMul: 0.6,
     rubberSlowMul: 1.4,
+    nitroRubber: 0.3, // oyuncunun bu kadar (0..1) önündeysek nitro kullanma
     // drift
     avoidMargin: 1.4,
   },
@@ -53,6 +55,7 @@ export const PROFILES = {
     steerNoiseMul: 1.0,
     lapseRate: 0,
     lapseDur: [0.6, 1.0],
+    startCalm: 20,
     attackMul: 1.0,
     attackNeedsPin: false,
     defend: 0.45,
@@ -69,6 +72,7 @@ export const PROFILES = {
     rubberAhead: [250, 200],
     rubberBoostMul: 1.0,
     rubberSlowMul: 1.0,
+    nitroRubber: 0.3,
     avoidMargin: 0.9,
   },
   hard: {
@@ -83,6 +87,7 @@ export const PROFILES = {
     steerNoiseMul: 0.4,
     lapseRate: 0,
     lapseDur: [0.6, 1.0],
+    startCalm: 12,
     attackMul: 1.8,
     attackNeedsPin: true,
     defend: 1,
@@ -99,6 +104,7 @@ export const PROFILES = {
     rubberAhead: [380, 250],
     rubberBoostMul: 1.0,
     rubberSlowMul: 0.3,
+    nitroRubber: 2, // zor: öndeyken de nitro kullanır
     avoidMargin: 0.8,
   },
 };
