@@ -359,6 +359,11 @@ export class Game {
       if (steps >= maxSteps) this.accumulator = 0;
     }
 
+    // Görsel ara değer: fizik sabit 1/60 adımla ilerler; ekran daha hızlı (120/144 Hz) veya düzensiz
+    // yenilendiğinde araçlar son iki fizik durumu arasında çizilir (kesik kesik hareketi önler).
+    const alpha = this.paused ? 1 : Math.min(1, this.accumulator / CONFIG.fixedDt);
+    for (const car of this.cars) if (car.interpolate) car.interpolate(alpha);
+
     const events = this.frameEvents;
     for (const evt of events) {
       this.hud.handleEvent(evt);

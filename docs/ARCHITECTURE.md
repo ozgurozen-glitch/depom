@@ -256,3 +256,12 @@ export class AudioSystem {
 
 **Yeni olaylar**: `camera_view` (car, view) — Game; `slipstream_start` / `slipstream_end` (car, other) — CollisionSystem.
 **URL parametreleri** (test): `?track=<id>&car=<id>&difficulty=easy|normal|hard`.
+
+## Sürüm 3 eklemeleri
+
+- **Görsel ara değer:** Game her karede (kamera ve çizimden önce) `car.interpolate(alpha)` çağırır; `alpha` (0..1)
+  son fizik adımından bu yana geçen sürenin adım süresine oranıdır. Car, fizik durumunu (`position`, `yaw`, …)
+  görsel mesh'ten ayrı tutar ve mesh'i önceki/şimdiki fizik durumu arasında ara değerle yerleştirir.
+  `car.position` mesh'in konumuna takma ad (alias) **olmamalıdır**.
+- **Manuel gaz:** gaz artık otomatik değil. Input: `throttle` (gaz tuşu), `brake` (fren/geri), `drift`
+  (el freni/drift tuşu, frenden ayrı), `nitro`, `steer`.
