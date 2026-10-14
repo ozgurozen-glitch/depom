@@ -95,7 +95,7 @@ export async function runRace(opts) {
     car.finished = false;
     car.finishTime = null;
     e.m = {
-      lapTimes: [], lastLapAt: 0, wallHits: 0, wallHard: 0, wrecks: 0, wreckWall: 0, wreckTakedown: 0,
+      lapTimes: [], incidents: [], lastLapAt: 0, wallHits: 0, wallHard: 0, wrecks: 0, wreckWall: 0, wreckTakedown: 0,
       stuck: 0, reverse: 0, takedowns: 0, bumps: 0, slipStarts: 0, slipTime: 0, slipEnds: 0, nearMiss: 0,
       stuckT: 0, stuckGrace: 0, revT: 0, revFlag: false, stuckFlag: false, topKmh: 0, sumSpeed: 0, steps: 0,
       nitroStarts: 0, perfect: 0, shock: 0, driverMs: 0, driverCalls: 0, wallSteps: 0, maxDraft: 0, driftSteps: 0,
@@ -175,9 +175,11 @@ export async function runRace(opts) {
           case 'wall_hit':
             m.wallHits++;
             if (evt.strength > 0.5) m.wallHard++;
+            if (m.incidents.length < 400) m.incidents.push({ k: evt.strength > 0.5 ? 'hard' : 'wall', str: +evt.strength.toFixed(2), s: Math.round(car.trackS), kmh: Math.round(car.speed * 3.6), t: +time.toFixed(1), lat: +car.lateral.toFixed(1) });
             break;
           case 'wreck':
             m.wrecks++;
+            if (m.incidents.length < 60) m.incidents.push({ k: `wreck-${evt.cause}`, s: Math.round(car.trackS), kmh: Math.round(car.speed * 3.6), t: +time.toFixed(1), lat: +car.lateral.toFixed(1) });
             if (evt.cause === 'wall') m.wreckWall++;
             else m.wreckTakedown++;
             break;
@@ -239,6 +241,7 @@ export async function runRace(opts) {
         }
       }
     }
+    if (opts.onStep) opts.onStep(entries, time, step);
     if (trace && step % 30 === 0) trace.push(cars.map((c) => [c.trackS, c.lateral, c.speed]));
     if (finished === cars.length) break;
     if (solo && finished === 1) break;

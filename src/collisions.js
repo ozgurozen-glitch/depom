@@ -9,6 +9,10 @@
 //     (c) saldıranın nitroLevel === 'shockwave' iken her temas
 //   Botların oyuncuyu devirmesi için (a) ve (b) eşikleri 1.4 kat yüksektir.
 // - Çift başına bekleme: bump 0.3 s, near_miss 2 s. Sıcak yolda nesne üretilmez (yalnızca olay anında).
+// - Slipstream (draft): her adımda her araba için `car.draft` (0..1) yazılır. Aracın ileri yönünde 4–35 m önünde,
+//   yanal ofseti < 2.2 m olan (devrilmemiş, ghost olmayan, havada olmayan, aynı yöne giden) bir araba varsa ve araç
+//   100 km/s'den hızlıysa hedef draft = 0.3..1 (yakınlıkla artar); değer ~0.6 s'de yükselir, ~0.4 s'de söner.
+//   `slipstream_start` / `slipstream_end` olayları histerezislidir (draft 0.25'i aşınca başlar, 0.08'in altına düşünce biter).
 import * as THREE from 'three';
 import { getRacingLine } from './ai/racingLine.js';
 
@@ -28,6 +32,19 @@ const PIN_DIRECTION = 0.4; // itme yönünün duvara dönük bileşeni (cos)
 const ATTACKER_TAKEDOWN_IMPULSE = 0.35; // takedown'da saldıranın aldığı itme oranı (hızını korusun)
 const TAKEDOWN_COOLDOWN = 3; // s, aynı çift için
 
+// Slipstream
+const DRAFT_MIN_SPEED = 100 / 3.6; // m/s (100 km/s)
+const DRAFT_MIN_DIST = 4; // m, ileri yönde (merkezden merkeze)
+const DRAFT_MAX_DIST = 35;
+const DRAFT_MAX_LATERAL = 2.2; // m
+const DRAFT_MIN_TARGET = 0.3;
+const DRAFT_RISE_TIME = 0.6; // s, 0 → 1
+const DRAFT_FALL_TIME = 0.4; // s, 1 → 0
+const DRAFT_START = 0.25; // olay eşikleri (histerezis)
+const DRAFT_END = 0.08;
+const DRAFT_LEADER_MIN_SPEED = 10; // m/s, öndeki araba en az bu hızda ve aynı yöne gitmeli
+const DRAFT_ALIGN = 0.5; // iki arabanın ileri vektörlerinin iç çarpımı en az bu kadar
+
 const EMPTY = Object.freeze([]);
 
 export class CollisionSystem {
@@ -41,6 +58,7 @@ export class CollisionSystem {
     // Tipli dizi: nesne alanına double yazmak V8'de kutulu sayı üretebilir, bu üretmez.
     this.hit = new Float64Array(4);
     this.trackLength = new Float64Array(1);
+    this.slipLeader = [];
     this.ensureCapacity(16);
   }
 
@@ -62,6 +80,13 @@ export class CollisionSystem {
     this.lastContact = grow(this.lastContact, Float64Array);
     this.prevDs = grow(this.prevDs, Float64Array);
     this.prevValid = grow(this.prevValid, Uint8Array);
+    // 1B (araba başına) diziler
+    const grow1 = (old, Type) => {
+      const arr = new Type(cap);
+      if (old) arr.set(old);
+      return arr;
+    };
+    this.slipOn = grow1(this.slipOn, Uint8Array);
     this.cap = cap;
   }
 
@@ -77,7 +102,10 @@ export class CollisionSystem {
 
   update(dt, cars, track) {
     this.time += dt;
-    if (!cars || cars.length < 2) return EMPTY;
+    if (!cars || cars.length < 2) {
+      if (cars) for (let i = 0; i < cars.length; i++) if (cars[i]) cars[i].draft = 0;
+      return EMPTY;
+    }
     const line = track ? getRacingLine(track) : null;
     const L = track && track.length > 0 ? track.length : 0;
     this.trackLength[0] = L;
@@ -121,7 +149,67 @@ export class CollisionSystem {
         }
       }
     }
+    events = this.updateSlipstream(dt, cars, events);
     return events || EMPTY;
+  }
+
+  // Slipstream: her araba için en iyi (en yakın) öndeki arabayı bul, draft'ı hedefe doğru ilerlet, olayları üret.
+  updateSlipstream(dt, cars, events) {
+    const n = cars.length;
+    const rise = dt / DRAFT_RISE_TIME;
+    const fall = dt / DRAFT_FALL_TIME;
+    for (let a = 0; a < n; a++) {
+      const A = cars[a];
+      if (!A) continue;
+      const ia = this.idOf(A);
+      let target = 0;
+      let leader = null;
+      if (A.wrecked) {
+        A.draft = 0;
+      } else if (A.ghost !== true && !A.airborne && A.speed > DRAFT_MIN_SPEED) {
+        const fax = Math.sin(A.yaw);
+        const faz = Math.cos(A.yaw);
+        const pa = A.position;
+        let bestD = DRAFT_MAX_DIST + 1;
+        for (let b = 0; b < n; b++) {
+          if (b === a) continue;
+          const B = cars[b];
+          if (!B || B.wrecked || B.ghost === true || B.airborne) continue;
+          const dx = B.position.x - pa.x;
+          const dz = B.position.z - pa.z;
+          const fwd = dx * fax + dz * faz;
+          if (fwd < DRAFT_MIN_DIST || fwd >= bestD) continue;
+          const lat = -dx * faz + dz * fax;
+          if (lat > DRAFT_MAX_LATERAL || lat < -DRAFT_MAX_LATERAL) continue;
+          if (Math.abs(B.position.y - pa.y) > MAX_DY) continue;
+          if (B.speed < DRAFT_LEADER_MIN_SPEED) continue;
+          if (fax * Math.sin(B.yaw) + faz * Math.cos(B.yaw) < DRAFT_ALIGN) continue;
+          bestD = fwd;
+          leader = B;
+        }
+        if (leader) target = DRAFT_MIN_TARGET + (1 - DRAFT_MIN_TARGET) * (1 - (bestD - DRAFT_MIN_DIST) / (DRAFT_MAX_DIST - DRAFT_MIN_DIST));
+      }
+      let d = A.draft;
+      if (!(d >= 0)) d = 0;
+      if (A.wrecked) d = 0;
+      else if (target > d) d = Math.min(target, d + rise);
+      else d = Math.max(target, d - fall);
+      A.draft = d;
+
+      if (leader) this.slipLeader[ia] = leader;
+      if (this.slipOn[ia] === 0) {
+        if (d >= DRAFT_START && leader) {
+          this.slipOn[ia] = 1;
+          if (!events) events = [];
+          events.push({ type: 'slipstream_start', car: A, other: leader });
+        }
+      } else if (d <= DRAFT_END) {
+        this.slipOn[ia] = 0;
+        if (!events) events = [];
+        events.push({ type: 'slipstream_end', car: A, other: this.slipLeader[ia] || null });
+      }
+    }
+    return events;
   }
 
   // XZ'de iki yönlendirilmiş kutu için ayırma ekseni testi (SAT). Temas varsa en küçük nüfuz ekseni
