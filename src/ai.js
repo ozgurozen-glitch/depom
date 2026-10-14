@@ -23,7 +23,7 @@ export const TUNING = {
   slopeK: 4, // hedef yanal eğim sınırı = slopeK / hız (m/s) → yüksek hızda yola göre en çok ~5° sapma
   slopeMin: 0.07,
   slopeMax: 0.3,
-  swingOmega: 0.8, // rad/s: S virajda (ters yönlü eğrilik) hız · eğrilik farkı üst sınırı
+  swingOmega: 0.6, // rad/s: S virajda (ters yönlü eğrilik) hız · eğrilik farkı üst sınırı
   capUnknown: 0.88, // gözlem yokken kapasite payı çarpanı (gözlem arttıkça 1'e yaklaşır)
   steerSlew: 8, // 1/s, direksiyon çıkışının en hızlı değişimi
   steerFilterTau: 0.1, // s, arabaya uygulanan direksiyonun tahmini (öğrenme için)
@@ -32,7 +32,8 @@ export const TUNING = {
   cornerLane: 0, // viraj içinde şerit tercihinin payı (0 = yalnızca düzlükte)
   laneBias: 3, // m, preferredLane = ±1 düzlükte bu kadar yana kayar
   avoidBehind: 4.5, // m, arkada kalmış ama yanımızdaki arabayı da say
-  tightCorner: 1 / 70, // 90 m içinde bu eğrilikten sıkı viraj varsa öndekiyle mesafe koru
+  cornerGap: 20, // m: sıkı viraj girişinde öndekiyle hedef mesafe
+  tightCorner: 0.004, // 90 m içinde bu eğrilikten sıkı viraj varsa öndekiyle mesafe koru
   alongside: 5, // m: bundan az önde (ya da arkada) olan araba 'yanımızda' sayılır
   avoidLatRate: 3.2, // m/s, kaçış sırasında varsayılan yanal hız (temas zamanı tahmini için)
   avoidLatLead: 0.5, // s, komşu arabanın yanal hızı bu süre kadar öne taşınır
@@ -751,7 +752,7 @@ export class BotDriver {
       if (Math.abs(dLat) > 10) continue;
       const owner = attackClaims.get(c);
       if (owner && owner !== this && owner.attackTarget === c) continue;
-      const weight = c === ctx.player ? 1 : car.isPlayer ? 0.7 : 0.35;
+      const weight = c === ctx.player ? 1 : car.isPlayer ? 0.7 : P.botTarget;
       let score = weight * (1 - Math.abs(ds) / 40);
       if (P.attackNeedsPin) {
         // akıllı saldırı: duvara yakın (sıkıştırılabilir) kurbanlara öncelik ver
@@ -1031,8 +1032,8 @@ export class BotDriver {
       if (!(ds >= -TUNING.avoidBehind)) continue; // arka tamponu hâlâ yanımızdaysa say
       const wrecked = c.wrecked;
       // sıkı viraj girişinde öndekiyle mesafeyi koru (yan yana sıkışıp dönüşte çarpışmayı azaltır)
-      if (tight && ds >= 5 && ds <= 26 && !wrecked && c.ghost !== true && Math.abs(c.lateral - lat) < 4.5) {
-        const cs = c.speed - 0.5 + (ds - 9) * 0.5;
+      if (tight && ds >= 5 && ds <= TUNING.cornerGap + 17 && !wrecked && c.ghost !== true && Math.abs(c.lateral - lat) < 4.5) {
+        const cs = c.speed - 0.5 + (ds - TUNING.cornerGap) * 0.5;
         if (cs < cornerFollow) cornerFollow = cs;
       }
       if (ds < TUNING.alongside) {
