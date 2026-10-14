@@ -321,7 +321,7 @@ export function buildRiver(ctx) {
   for (let k = 0; k < 90 * ctx.density; k++) {
     const z = rr(-900, 1200);
     const x = ctx.bankX(z) - RIVER.width - rr(8, 260);
-    if (ctx.overlaps(x, z, 1.5)) continue;
+    if (ctx.overlaps(x, z, 1.5) || ctx.dist(x, z) < 18) continue;
     palms.push({ x, z, s: rr(0.9, 1.4), yaw: rnd() * 6.28 });
   }
   const palmMesh = new THREE.InstancedMesh(palmGeometry(), new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide, color: 0x6a7a70 }), Math.max(1, palms.length));
