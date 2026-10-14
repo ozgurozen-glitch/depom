@@ -10,36 +10,51 @@
 
 const BIN = 10; // m/s
 const NB = 12; // 0..120 m/s
-const PRIOR_YAW_RATE = 1.5; // rad/s, düşük hızda tam direksiyon (ön kabul)
-const PRIOR_LAT_ACCEL = 34; // m/s², yüksek hızda tam direksiyon (ön kabul)
+const PRIOR_RATE_LOW = 2.1; // rad/s, düşük hızda tam direksiyon (ön kabul)
+const PRIOR_RATE_HIGH = 1.08; // rad/s, azami hızda tam direksiyon (ön kabul)
+const PRIOR_TURN_RADIUS = 6.5; // m, en küçük dönüş yarıçapı (ön kabul)
+const PRIOR_SAFETY = 0.85; // ön kabulün muhafazakâr çarpanı (gözlem geldikçe ölçek öğrenilir)
+const DEFAULT_VMAX = 80; // m/s, bilinmiyorsa
 const MIN_LAT_ACCEL = 10; // m/s², kapasite tahmininin alt sınırı
 const LEARN_RATE = 0.04;
 const TRUST_SAMPLES = 40; // kutunun kendi tahminine tam güven için örnek sayısı
 
 const models = new WeakMap();
 
-/** Car sınıfı başına paylaşılan model. */
+/** Araç modeli (spec) ya da — spec yoksa — Car sınıfı başına paylaşılan model. */
+export function modelKey(car) {
+  if (car && car.spec && typeof car.spec === 'object') return car.spec;
+  return car && car.constructor ? car.constructor : VehicleModel;
+}
+
 export function getVehicleModel(car) {
-  const key = car && car.constructor ? car.constructor : VehicleModel;
+  const key = modelKey(car);
   let m = models.get(key);
   if (!m) {
-    m = new VehicleModel();
+    m = new VehicleModel(key);
     models.set(key, m);
   }
   return m;
 }
 
 const binSpeed = (b) => (b + 0.5) * BIN;
-const priorRate = (v) => Math.min(PRIOR_YAW_RATE * Math.min(1, v / 12), PRIOR_LAT_ACCEL / Math.max(v, 1));
+// Hıza göre ön kabul: düşük hızda v/R ile, yüksek hızda azami hızla doğrusal azalan yaw oranıyla sınırlı.
+// vmax (Car.maxSpeed) biliniyorsa eğri ona göre ölçeklenir; yoksa varsayılan. Gerçek değerler gözlemle öğrenilir.
+const priorRate = (v, vmax = DEFAULT_VMAX) => PRIOR_SAFETY * Math.min(
+  Math.max(v, 1) / PRIOR_TURN_RADIUS,
+  PRIOR_RATE_LOW + (PRIOR_RATE_HIGH - PRIOR_RATE_LOW) * Math.min(1, Math.max(v, 0) / vmax) ** 1.3,
+);
 
 export class VehicleModel {
-  constructor() {
+  constructor(key = null) {
+    this.key = key;
+    this.vmax = DEFAULT_VMAX;
     this.rate = new Float64Array(NB); // doğrusal bölge: dönüş hızı / direksiyon
     this.rateN = new Float64Array(NB);
     this.cap = new Float64Array(NB); // tam direksiyonda dönüş hızı
     this.capN = new Float64Array(NB);
     for (let b = 0; b < NB; b++) {
-      this.rate[b] = priorRate(binSpeed(b));
+      this.rate[b] = priorRate(binSpeed(b), this.vmax);
       this.cap[b] = this.rate[b];
     }
     // Gözlenmemiş kutular için ön kabulün genel ölçeği.
@@ -48,10 +63,18 @@ export class VehicleModel {
     this.capSeen = false;
 
     this.topSpeed = 0; // nitrosuz, düz yolda gözlenen azami hız (0 = bilinmiyor)
+    this.topFixed = false; // Car.maxSpeed biliniyorsa gözlem yerine o kullanılır
     this.fleet = new WeakMap(); // araba → önceki adım (hız, yaw)
     this.lastCtx = null;
     this.brakeDecel = 24; // m/s², fren yavaşlaması
     this.driftTrust = 0.8; // driftin bu arabada çizgiyi bozmadan işe yarayıp yaramadığı (0..1)
+  }
+
+  /** Car.maxSpeed (aracın taban azami hızı) biliniyorsa gözlemin yerine geçer. */
+  setTopSpeed(v) {
+    this.topSpeed = v;
+    this.topFixed = true;
+    this.vmax = v;
   }
 
   sampleBins(arr, cnt, scale, v) {
@@ -66,13 +89,23 @@ export class VehicleModel {
 
   blend(arr, cnt, scale, b) {
     const w = Math.min(1, cnt[b] / TRUST_SAMPLES);
-    return arr[b] * w + priorRate(binSpeed(b)) * scale * (1 - w);
+    return arr[b] * w + priorRate(binSpeed(b), this.vmax) * scale * (1 - w);
   }
 
   /** Birim direksiyon başına yol eğriliği (1/m). */
   steerGain(v) {
     const sp = Math.max(v, 4);
     return this.sampleBins(this.rate, this.rateN, this.rateScale, sp) / sp;
+  }
+
+  /** Bu hızdaki (komşu kutular dahil) direksiyon gözlemi sayısına göre güven: 0 (hiç gözlem yok) .. 1. */
+  confidence(v) {
+    const u = Math.min(NB - 1, Math.max(0, v / BIN - 0.5));
+    const i = Math.floor(u);
+    const j = i + 1 < NB ? i + 1 : i;
+    const f = u - i;
+    const c = this.rateN[i] + (this.rateN[j] - this.rateN[i]) * f;
+    return c >= TRUST_SAMPLES ? 1 : c / TRUST_SAMPLES;
   }
 
   /** Tam direksiyonda elde edilebilir yanal ivme (m/s²). */
@@ -97,7 +130,7 @@ export class VehicleModel {
     const i = Math.floor(u);
     const j = i + 1 < NB ? i + 1 : i;
     const f = u - i;
-    const prior = priorRate(v);
+    const prior = priorRate(v, this.vmax);
     if (a < 0.85) {
       this.learnBin(this.rate, this.rateN, this.rateScale, i, meas, LEARN_RATE * a * (1 - f));
       this.learnBin(this.rate, this.rateN, this.rateScale, j, meas, LEARN_RATE * a * f);
@@ -137,6 +170,7 @@ export class VehicleModel {
     for (let i = 0; i < cars.length; i++) {
       const c = cars[i];
       if (!c || !c.velocity || !c.position) continue;
+      if (modelKey(c) !== this.key) continue; // yalnızca aynı araç modeli
       let st = this.fleet.get(c);
       if (!st) {
         st = { speed: 0, yaw: 0, x: NaN, z: NaN, valid: false };
@@ -152,8 +186,8 @@ export class VehicleModel {
         let dYaw = c.yaw - st.yaw;
         dYaw -= Math.round(dYaw / (2 * Math.PI)) * 2 * Math.PI;
         const vy = c.velocity.y || 0;
-        if (acc > -0.6 && acc < 12 &&Math.abs(dYaw / dt) < 0.05 && Math.abs(vy) < 1
-          && Math.abs(line.curvatureAt(c.trackS)) < 1 / 500 && v > this.topSpeed) {
+        if (acc > -0.6 && acc < 12 && Math.abs(dYaw / dt) < 0.05 && Math.abs(vy) < 1
+          && Math.abs(line.curvatureAt(c.trackS)) < 1 / 500 && v > this.topSpeed && !this.topFixed) {
           this.topSpeed = v;
         }
       }
