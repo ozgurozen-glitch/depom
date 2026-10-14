@@ -87,6 +87,24 @@ export const PICKUP_DEFS = [
   [-520, 60, 5],
 ];
 
+// Riviera yerleşimi tek nesne olarak (Track'e verilen `layout` parametresinin varsayılanı).
+// Başka pistler aynı alanlarla kendi yerleşimlerini tanımlar (bkz. src/tracks/bangkok/layout.js).
+//   controlPoints, startMarker, elevationKeys: merkez çizgisi (buildCenterline)
+//   sections: [{ id, at }], ramps: RAMP_DEFS biçimi, pickups: [x, z, lateral]
+//   tunnel: tünel bölümünün id'si (yoksa null), subdiv: kontrol parçası başına yoğun örnek
+export const RIVIERA_LAYOUT = {
+  name: 'Riviera Sunset',
+  width: ROAD_WIDTH,
+  controlPoints: CONTROL_POINTS,
+  startMarker: START_MARKER,
+  elevationKeys: ELEVATION_KEYS,
+  sections: SECTION_MARKERS,
+  ramps: RAMP_DEFS,
+  pickups: PICKUP_DEFS,
+  tunnel: 'tunnel',
+  subdiv: 120,
+};
+
 // ---------------------------------------------------------------------------------------------
 
 function centripetalCR(p0, p1, p2, p3, t) {
@@ -160,10 +178,11 @@ function makePeriodicMonotone(keys, P) {
 
 /**
  * Merkez çizgisini kurar ve sabit aralıklı (spacing, 3B yay uzunluğu) tablolar döndürür.
- * Dizin 0 = s 0 (START_MARKER'a en yakın nokta).
+ * Dizin 0 = s 0 (layout.startMarker'a en yakın nokta).
  */
-export function buildCenterline({ spacing = 2, subdiv = 120 } = {}) {
-  const P = CONTROL_POINTS;
+export function buildCenterline({ spacing = 2, subdiv, layout = RIVIERA_LAYOUT } = {}) {
+  const P = layout.controlPoints;
+  if (subdiv === undefined) subdiv = layout.subdiv || 120;
   const n = P.length;
 
   // 1) Yoğun 2B örnekleme
@@ -195,7 +214,7 @@ export function buildCenterline({ spacing = 2, subdiv = 120 } = {}) {
   };
 
   // 2) Yükselti (yatay yay uzunluğuna göre)
-  const keys = ELEVATION_KEYS.map(([x, z, y]) => ({ u: uArr[nearestDense(x, z)], y }));
+  const keys = layout.elevationKeys.map(([x, z, y]) => ({ u: uArr[nearestDense(x, z)], y }));
   keys.sort((a, b) => a.u - b.u);
   const elev = makePeriodicMonotone(keys, L2);
 
@@ -211,7 +230,7 @@ export function buildCenterline({ spacing = 2, subdiv = 120 } = {}) {
   const L3 = L3arr[M];
 
   // 4) Başlangıç: START_MARKER'a en yakın yoğun nokta, 3B uzunluk ofseti
-  const startIdx = nearestDense(START_MARKER[0], START_MARKER[1]);
+  const startIdx = nearestDense(layout.startMarker[0], layout.startMarker[1]);
   const s0off = L3arr[startIdx];
 
   const N = Math.round(L3 / spacing);

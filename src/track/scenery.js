@@ -99,6 +99,8 @@ function createBuildingMaterial() {
       .replace('#include <emissivemap_fragment>', 'totalEmissiveRadiance *= facEm;');
   };
   mat.customProgramCacheKey = () => 'facade-v1';
+  // Shader uniform'larındaki dokular materyal alanı olmadığından Game bunları göremez; Environment.dispose bırakır.
+  mat.userData.textures = [tex.map, tex.emissiveMap, tex.ormMap];
   return mat;
 }
 

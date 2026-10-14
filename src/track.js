@@ -1,11 +1,11 @@
-// Track: "Riviera Sunset" — gün batımında Akdeniz kıyı şehri pisti.
+// Track: pist merkez çizgisi, yol/bariyer/rampa mesh'leri ve sorgular. Varsayılan yerleşim "Riviera Sunset"
+// (gün batımında Akdeniz kıyı şehri); başka pistler `layout` parametresi (bkz. track/layout.js RIVIERA_LAYOUT)
+// ve isteğe bağlı olarak create*Material / barrierRow metotlarını ezen bir alt sınıfla kurulur.
 // Merkez çizgisi sabit aralıklı (≈2 m) tablolarda tutulur; sample/project/heightAt bu tablolar üzerinden
 // hızlı ve (project/heightAt) nesne üretmeden çalışır. Yol, bordür, bariyer, rampa, start çizgisi ve
 // nitro tüplerinin mesh'leri burada; mekân (deniz, tünel, binalar...) Environment'tadır.
 import * as THREE from 'three';
-import {
-  buildCenterline, ROAD_WIDTH, SECTION_MARKERS, RAMP_DEFS, PICKUP_DEFS,
-} from './track/layout.js';
+import { buildCenterline, RIVIERA_LAYOUT } from './track/layout.js';
 import {
   asphaltTexture, barrierTexture, BARRIER_ROWS, curbTexture, rampTexture, startDecalTexture,
   nitroTexture, glowTexture,
@@ -27,11 +27,12 @@ const BARRIER_PROFILE = [
 ];
 
 export class Track {
-  constructor(scene) {
-    this.name = 'Riviera Sunset';
-    this.width = ROAD_WIDTH;
+  constructor(scene, layout = RIVIERA_LAYOUT) {
+    this.layout = layout;
+    this.name = layout.name;
+    this.width = layout.width;
 
-    const c = buildCenterline({ spacing: 2 });
+    const c = buildCenterline({ spacing: 2, layout });
     this.N = c.N;
     this.ds = c.ds;
     this.length = c.length;
@@ -42,16 +43,16 @@ export class Track {
     this.buildSpatialGrid();
 
     // Bölümler (Environment mekânı bunlara göre kurar)
-    this.sections = SECTION_MARKERS.map((m) => ({ id: m.id, s0: this.nearestIndex(m.at[0], m.at[1]) * this.ds }));
+    this.sections = layout.sections.map((m) => ({ id: m.id, s0: this.nearestIndex(m.at[0], m.at[1]) * this.ds }));
     this.sections.sort((a, b) => a.s0 - b.s0);
     for (let i = 0; i < this.sections.length; i++) {
       const next = this.sections[(i + 1) % this.sections.length];
       this.sections[i].s1 = next.s0 > this.sections[i].s0 ? next.s0 : next.s0 + this.length;
     }
-    const tun = this.sections.find((sec) => sec.id === 'tunnel');
-    this.tunnel = { s0: tun.s0, s1: tun.s1 };
+    const tun = layout.tunnel ? this.sections.find((sec) => sec.id === layout.tunnel) : null;
+    this.tunnel = tun ? { s0: tun.s0, s1: tun.s1 } : null;
 
-    this.ramps = RAMP_DEFS.map((r) => {
+    this.ramps = layout.ramps.map((r) => {
       const s0 = this.nearestIndex(r.at[0], r.at[1]) * this.ds;
       return { s0, s1: s0 + r.length, height: r.height, latMin: r.latMin, latMax: r.latMax, type: r.type };
     });
@@ -318,6 +319,7 @@ export class Track {
   }
 
   inTunnel(s, margin = 0) {
+    if (!this.tunnel) return false;
     s = this.wrap(s);
     return s >= this.tunnel.s0 - margin && s <= this.tunnel.s1 + margin;
   }
@@ -383,20 +385,30 @@ export class Track {
       }
     }
     const geo = stripGeometry(pos, uv, col, N + 1, cols);
-    const map = asphaltTexture({ widthM: this.width, lengthM: 24 });
-    // Phong: güneşe doğru hafif asfalt parlaması, IBL'siz (geniş ekran alanı → ucuz parça shader'ı)
-    const mat = new THREE.MeshPhongMaterial({
-      map, vertexColors: true, specular: 0x3a3430, shininess: 18,
-    });
-    const mesh = new THREE.Mesh(geo, mat);
+    const mesh = new THREE.Mesh(geo, this.createRoadMaterial());
     mesh.receiveShadow = true;
     mesh.name = 'road';
     this.group.add(mesh);
     this.roadMesh = mesh;
   }
 
+  /** Yol materyali (alt sınıflar ezebilir). Doku boyu 24 m, u yol genişliği boyunca 0..1. */
+  createRoadMaterial() {
+    const map = asphaltTexture({ widthM: this.width, lengthM: 24 });
+    // Phong: güneşe doğru hafif asfalt parlaması, IBL'siz (geniş ekran alanı → ucuz parça shader'ı)
+    return new THREE.MeshPhongMaterial({
+      map, vertexColors: true, specular: 0x3a3430, shininess: 18,
+    });
+  }
+
+  /** Bariyer materyali (alt sınıflar ezebilir). Doku atlası BARRIER_ROWS satır, u boyunca 16 m. */
+  createBarrierMaterial() {
+    return new THREE.MeshLambertMaterial({ map: barrierTexture(), vertexColors: true });
+  }
+
   /** Tünel içinde sodyum lambası tonu (yol/bariyer köşe renkleri için). */
   tunnelTint(s, out) {
+    if (!this.tunnel) return out.setRGB(1, 1, 1);
     const a = this.tunnel.s0;
     const b = this.tunnel.s1;
     s = this.wrap(s);
@@ -546,8 +558,7 @@ export class Track {
     geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     geo.setIndex(indices);
     geo.computeVertexNormals();
-    const mat = new THREE.MeshLambertMaterial({ map: barrierTexture(), vertexColors: true });
-    const mesh = new THREE.Mesh(geo, mat);
+    const mesh = new THREE.Mesh(geo, this.createBarrierMaterial());
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.name = 'barriers';
@@ -716,7 +727,7 @@ export class Track {
       side: THREE.DoubleSide,
     });
     const smp = { pos: new THREE.Vector3(), tangent: new THREE.Vector3(), right: new THREE.Vector3(), up: new THREE.Vector3() };
-    PICKUP_DEFS.forEach(([x, z, lateral], idx) => {
+    this.layout.pickups.forEach(([x, z, lateral], idx) => {
       const s = this.nearestIndex(x, z) * this.ds;
       this.sample(s, smp);
       const group = new THREE.Group();
