@@ -28,6 +28,27 @@ const FPS_MIN = 40;
 
 const BLOOM = { strength: 0.6, radius: 0.5, threshold: 0.85 };
 
+const SANITIZE_SHADER = {
+  uniforms: { tDiffuse: { value: null } },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    varying vec2 vUv;
+    void main() {
+      vec4 c = texture2D(tDiffuse, vUv);
+      // NaN != NaN; sonsuz değerler de üst sınırı aşar.
+      bvec4 bad = bvec4(c.r != c.r || c.r > 65000.0, c.g != c.g || c.g > 65000.0,
+        c.b != c.b || c.b > 65000.0, c.a != c.a || c.a > 65000.0);
+      if (any(bad)) c = vec4(0.0, 0.0, 0.0, 1.0);
+      gl_FragColor = vec4(clamp(c.rgb, 0.0, 256.0), clamp(c.a, 0.0, 1.0));
+    }`,
+};
+
 // Doğrusal HDR renkler
 const COL_SHOCK = [0.45, 1.1, 2.4];
 const COL_SHOCK2 = [0.9, 0.35, 2.2];
@@ -124,7 +145,12 @@ export class Effects {
     this.postPass = new ShaderPass(this.postMaterial);
     this.outputPass = new OutputPass();
 
+    // NaN/sonsuz piksel temizliği: tek bir hatalı piksel bloom'un küçük mip seviyeleri üzerinden tüm ekrana
+    // yayılıp görüntüyü karartabilir (bazı GPU'larda). Bloom'dan önce temizlenir.
+    this.sanitizePass = new ShaderPass(SANITIZE_SHADER);
+
     this.composer.addPass(this.renderPass);
+    this.composer.addPass(this.sanitizePass);
     this.composer.addPass(this.bloomPass);
     this.composer.addPass(this.postPass);
     this.composer.addPass(this.outputPass);
@@ -202,7 +228,42 @@ export class Effects {
   }
 
   render() {
+    if (this.direct) {
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
     this.composer.render(this.lastDt);
+    this.checkBlackFrame();
+  }
+
+  // Bazı GPU/sürücülerde efekt zinciri (yarım float hedefler vb.) tamamen siyah çıkabilir. İlk saniyelerde
+  // ekrandan birkaç piksel okunur; üst üste hepsi siyahsa son-işleme kapatılıp sahne doğrudan çizilir.
+  // Gökyüzü hiçbir zaman tam siyah olmadığından bu durum ancak bozuk bir çizim hattında oluşur.
+  checkBlackFrame() {
+    if (this.blackChecksLeft === undefined) {
+      this.blackChecksLeft = 12;
+      this.blackFrame = 0;
+      this.blackStreak = 0;
+      this.probe = new Uint8Array(4);
+    }
+    if (this.blackChecksLeft <= 0) return;
+    this.blackFrame++;
+    if (this.blackFrame < 20 || this.blackFrame % 20 !== 0) return;
+    this.blackChecksLeft--;
+    const gl = this.renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    let lit = 0;
+    for (const [fx, fy] of [[0.5, 0.75], [0.2, 0.6], [0.8, 0.6], [0.5, 0.4], [0.3, 0.9]]) {
+      gl.readPixels(Math.floor(w * fx), Math.floor(h * fy), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, this.probe);
+      if (this.probe[0] + this.probe[1] + this.probe[2] > 6) lit++;
+    }
+    this.blackStreak = lit === 0 ? this.blackStreak + 1 : 0;
+    if (this.blackStreak >= 3) {
+      this.direct = true;
+      this.blackChecksLeft = 0;
+      console.warn('Efekt zinciri siyah görüntü üretiyor; son-işleme kapatıldı, doğrudan çizime geçildi.');
+    }
   }
 
   update(dt, cars, player, events) {

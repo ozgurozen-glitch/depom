@@ -58,7 +58,9 @@ const fragmentShader = /* glsl */`
     float y = d.y;
     float h = max(y, 0.0);
     float sunDot = dot(d, uSunDir);
-    float sunSide = 0.5 + 0.5 * dot(normalize(d.xz + 1e-5), normalize(uSunDir.xz));
+    // pow() negatif tabanda NaN verir (gerçek GPU'larda); yuvarlama hatasına karşı 0..1'e sabitle.
+    vec2 dxz = d.xz / max(length(d.xz), 1e-4);
+    float sunSide = clamp(0.5 + 0.5 * dot(dxz, normalize(uSunDir.xz)), 0.0, 1.0);
 
     // Dikey gradyan; ufuk rengi güneş tarafında altın, karşı tarafta pembe-lila
     vec3 horizon = mix(uHorizonFar, uHorizon, pow(sunSide, 1.6));
