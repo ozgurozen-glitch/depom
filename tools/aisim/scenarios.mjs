@@ -150,5 +150,84 @@ for (const model of models) {
   check(`${model}/hard shockwave atar`, shockAt !== null, shockAt !== null ? `${shockAt} s, takedown: ${takedownAt || 'yok'}` : 'atmadı');
 }
 
+console.log('\n# Savunma + sollama: uzun düzlükte yavaş öndeki (zor) ve arkadan yaklaşan hızlı araba (mixed pisti)');
+for (const [lm, fm] of [['gripper', 'speedster'], ['vortex', 'speedster'], ['gripper', 'vortex']]) {
+  const track = makeTrack('mixed');
+  const scene = new THREE.Scene();
+  const mk = async (model, name, diff, skill) => {
+    const Car = await carClass(model);
+    const car = new Car({ scene, color: 0xff0000, name, isPlayer: false });
+    const driver = new BotDriver(car, track, { skill, aggression: 0.1, preferredLane: 0, difficulty: diff });
+    return { car, driver };
+  };
+  const L = await mk(lm, 'L', 'hard', 0.9);
+  const F = await mk(fm, 'F', 'hard', 1);
+  place(track, L.car, track.length - 290, 0, 0, 62);
+  place(track, F.car, track.length - 335, 3, 0, 66);
+  for (const d of [L.driver, F.driver]) {
+    d.racing = true;
+    d.resetState();
+    d.raceClock = 30;
+    d.defendCooldown = 0;
+    d.otCooldown = 0;
+  }
+  const cs = new CollisionSystem();
+  const cars = [L.car, F.car];
+  const latHist = [];
+  let bumps = 0;
+  let takedowns = 0;
+  let slipStart = 0;
+  let passedAt = null;
+  let defSteps = 0;
+  let defFlips = 0;
+  let defRate = 0;
+  let defMaxAbs = 0;
+  let prevCur = null;
+  let prevDirD = 0;
+  for (let i = 0; i < 60 * 10.5; i++) {
+    const ctx = { cars, player: null, raceStarted: true };
+    L.car.update(DT, L.driver.getInput(DT, ctx), track);
+    F.car.update(DT, F.driver.getInput(DT, ctx), track);
+    for (const e of cs.update(DT, cars, track)) {
+      if (e.type === 'bump') bumps++;
+      if (e.type === 'takedown') takedowns++;
+      if (e.type === 'slipstream_start' && e.car === F.car) slipStart++;
+    }
+    L.car.events.length = 0;
+    F.car.events.length = 0;
+    if (L.driver.defendActive) {
+      defSteps++;
+      const dcur = L.driver.defendCur;
+      if (prevCur !== null) {
+        const dd = dcur - prevCur;
+        if (Math.abs(dd) > 1e-6) {
+          const sg = Math.sign(dd);
+          if (prevDirD !== 0 && sg !== prevDirD) defFlips++;
+          prevDirD = sg;
+        }
+        defRate = Math.max(defRate, Math.abs(dd) / DT);
+      }
+      prevCur = dcur;
+      defMaxAbs = Math.max(defMaxAbs, Math.abs(dcur));
+    } else {
+      prevCur = null;
+      prevDirD = 0;
+    }
+    if (i % 15 === 0) { latHist.push(L.car.lateral); if (process.env.SCEN_DEBUG) console.log((i * DT).toFixed(2), 'L s', L.car.trackS.toFixed(0), 'lat', L.car.lateral.toFixed(1), 'v', (L.car.speed * 3.6).toFixed(0), L.driver.defendActive ? 'DEF' : '---', 'F lat', F.car.lateral.toFixed(1), 'v', (F.car.speed * 3.6).toFixed(0), 'ot', F.driver.otState, 'dr', F.car.draft.toFixed(2)); }
+    let ds = F.car.trackS - L.car.trackS;
+    ds -= Math.round(ds / track.length) * track.length;
+    if (passedAt === null && ds > 6) passedAt = (i * DT).toFixed(1);
+  }
+  // lider yanal hız yön değişimleri (> 0.4 m/s) ve en büyük yanal sapma
+  let maxAbs = 0;
+  let maxLatSpeed = 0;
+  for (let i = 1; i < latHist.length; i++) {
+    maxAbs = Math.max(maxAbs, Math.abs(latHist[i]));
+    maxLatSpeed = Math.max(maxLatSpeed, Math.abs(latHist[i] - latHist[i - 1]) / 0.25);
+  }
+  const ok = takedowns === 0 && defFlips === 0 && defRate < 3 && defMaxAbs < 7.2 && L.driver.stats.defend <= 2 && L.driver.stats.defend >= 1;
+  check(`lider ${lm} / takipçi ${fm}`, ok, `savunma ${L.driver.stats.defend}, takip ${F.driver.stats.follow}, sollama ${F.driver.stats.overtake}, geçiş ${passedAt || '-'} s, slip başlangıç ${slipStart}, bump ${bumps}, takedown ${takedowns}, savunma süresi ${(defSteps * DT).toFixed(1)} s, hedef yön değişimi ${defFlips}, hedef maks yanal hız ${defRate.toFixed(1)} m/s, hedef maks |lat| ${defMaxAbs.toFixed(1)}`);
+}
+
 console.log(failures ? `\n${failures} senaryo BAŞARISIZ` : '\nTüm senaryolar geçti');
 process.exit(failures ? 1 : 0);

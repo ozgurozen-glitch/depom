@@ -117,8 +117,10 @@ export async function runRace(opts) {
     for (const e of entries) {
       const t0 = performance.now();
       const inp = e.driver.getInput(DT, ctx);
-      e.m.driverMs += performance.now() - t0;
+      const dtc = performance.now() - t0;
+      e.m.driverMs += dtc;
       e.m.driverCalls++;
+      if (step > 1200) (e.m.callUs || (e.m.callUs = [])).push(dtc * 1000);
       e.car.update(DT, inp, track);
     }
     const ev = collisions.update(DT, cars, track) || [];
