@@ -5,7 +5,7 @@ import { Car, CAR_TUNING } from '../../src/car.js';
 import { TestTrack } from './test-track.js';
 import { FlatTrack } from './flat-track.js';
 import { CARS, getCarDef } from '../../src/cars.js';
-import { measureDrift, printDrift } from './drift.mjs';
+import { measureDrift, printDrift, measureExit, printExit } from './drift.mjs';
 import { measureCar, deriveStats } from './stats.mjs';
 import { measureAll, printAll, throttleRelease } from './dynamics.mjs';
 
@@ -351,7 +351,7 @@ console.log('\n# Drift yumuşaklığı (gövde açısı: hız ω rad/s, ivme α 
     check(`${def.name}: ivme sınırları (α < 80, β̈ < 70 rad/s²)`, m.all.a < 80 && m.all.sa < 70, `α ${m.all.a.toFixed(1)}, β̈ ${m.all.sa.toFixed(1)}`);
     check(`${def.name}: flick akıcı (slip yeni yönde < 0.6 s, kararlı ≥ 22°)`, m.flick.flipTime !== null && m.flick.flipTime < 0.6 && m.flick.toDeg > 22,
       `geçiş ${m.flick.flipTime?.toFixed(2)} s, ${m.flick.toDeg.toFixed(1)}°`);
-    check(`${def.name}: çıkışta slip kademeli söner (0.3–1.0 s)`, m.exit.clearTime > 0.3 && m.exit.clearTime < 1.0, `${m.exit.clearTime?.toFixed(2)} s`);
+    check(`${def.name}: çıkışta slip kademeli söner (0.4–1.3 s)`, m.exit.clearTime > 0.4 && m.exit.clearTime < 1.3, `${m.exit.clearTime?.toFixed(2)} s`);
     check(`${def.name}: drift hız kaybı makul (< 45 km/s / 3.3 s)`, m.speedLoss < 45, `${m.speedLoss.toFixed(0)} km/s`);
   }
   // Analog direksiyon: kararlı drift açısı direksiyonla doğrusal (karşı direksiyon -0.5'e kadar drift yönünü korur)
@@ -366,12 +366,80 @@ console.log('\n# Drift yumuşaklığı (gövde açısı: hız ω rad/s, ivme α 
       run(c, tr, 0.1, input({ throttle: 0, brake: 1, drift: true, steer: 1 }));
       run(c, tr, 1.8, input({ throttle: 0, brake: 1, drift: true, steer: st }));
       got.push(c.driftAngle * 180 / Math.PI);
-      want.push((T.driftAngleMin + (T.driftAngleMax - T.driftAngleMin) * (st + 1) / 2) * 180 / Math.PI);
+      want.push((T.driftAngleMin + (T.driftAngleMax - T.driftAngleMin) * (st + 1) / 2 + T.driftThrottleAngle * (0 - 0.6)) * 180 / Math.PI);
     }
     check(`${def.name}: drift açısı direksiyonla doğrusal (±1°)`, got.every((g, i) => Math.abs(g - want[i]) < 1),
       `${got.map((g) => g.toFixed(1)).join(' / ')}° (beklenen ${want.map((g) => g.toFixed(1)).join(' / ')})`);
   }
   SPEC = null;
+}
+
+// ---------------------------------------------------------------------------------------------
+console.log('\n# Drift çıkışı: gerçekçi kayma süresi (lastik doygunluğu), momentum, karşı direksiyon, gaz');
+{
+  // Önceki modelde (üstel yanal sönüm) süre hıza ve gaza bağlı değildi: 0.58 / 0.63 / 0.67 s (100/200/280), gazla aynı,
+  // karşı direksiyonla 0.45 / 0.48 / 0.52 s.
+  for (const def of CARS) {
+    const e100 = measureExit(def, 100);
+    const e200 = measureExit(def, 200);
+    const e280 = measureExit(def, 280);
+    const g200 = measureExit(def, 200, { thr: 1 });
+    const c200 = measureExit(def, 200, { counter: 1 });
+    printExit(`${def.name} 100`, e100);
+    printExit(`${def.name} 200`, e200);
+    printExit(`${def.name} 280`, e280);
+    printExit(`${def.name} 200 gazlı`, g200);
+    printExit(`${def.name} 200 karşı dir.`, c200);
+    check(`${def.name}: ${e200.slipDeg.toFixed(0)}° kaymadan düzelme 0.6–1.2 s (100/200/280 km/s)`,
+      [e100, e200, e280].every((e) => e.clearTime >= 0.6 && e.clearTime <= 1.2), `${e100.clearTime.toFixed(2)} / ${e200.clearTime.toFixed(2)} / ${e280.clearTime.toFixed(2)} s`);
+    check(`${def.name}: hızlı drift'te düzelme daha uzun`, e280.clearTime > e100.clearTime + 0.08, `${e100.clearTime.toFixed(2)} → ${e280.clearTime.toFixed(2)} s`);
+    check(`${def.name}: gaz basılı kalırsa kayma uzar`, g200.clearTime > e200.clearTime + 0.06, `${e200.clearTime.toFixed(2)} → ${g200.clearTime.toFixed(2)} s`);
+    check(`${def.name}: karşı direksiyon düzelmeyi kısaltır (≥ %30)`, c200.clearTime < e200.clearTime * 0.7, `${e200.clearTime.toFixed(2)} → ${c200.clearTime.toFixed(2)} s`);
+    check(`${def.name}: momentum — hız vektörü 40°+ dönerek kayar, hız çıkışta korunur (< 60 km/s kayıp)`, e200.turnDeg > 40 && e200.speedLoss < 60, `dönüş ${e200.turnDeg.toFixed(0)}°, kayıp ${e200.speedLoss.toFixed(0)} km/s`);
+    check(`${def.name}: çıkışta yaw ivmesi küçük (< 14 rad/s²)`, Math.max(e200.peakYawAcc, c200.peakYawAcc) < 14, `${e200.peakYawAcc.toFixed(1)} / ${c200.peakYawAcc.toFixed(1)}`);
+  }
+  // Anında yapışma yok: çıkıştan 0.2 s sonra slip hâlâ büyük
+  const tr = new FlatTrack(8000);
+  const car = makeCar(tr, 0, 0, 200);
+  run(car, tr, 0.1, input({ throttle: 1, drift: true, steer: 1 }));
+  run(car, tr, 1.5, input({ throttle: 1, drift: true, steer: 1 }));
+  const slipDeg = () => Math.abs(Math.atan2(Math.sin(Math.atan2(car.velocity.x, car.velocity.z) - car.yaw), Math.cos(Math.atan2(car.velocity.x, car.velocity.z) - car.yaw))) * 180 / Math.PI;
+  const s0 = slipDeg();
+  run(car, tr, 0.2, input({ throttle: 0, steer: 0 }));
+  const s02 = slipDeg();
+  check('çıkıştan 0.2 s sonra slip hâlâ ≥ %70 (araç anında yapışmaz)', s02 > s0 * 0.7, `${s0.toFixed(1)}° → ${s02.toFixed(1)}°`);
+
+  // Arayüz: getDriftState / predictDrift
+  const st = car.getDriftState();
+  check('getDriftState alanları', ['drifting', 'angle', 'angleRate', 'slipRecoveryTime', 'lateralSpeed'].every((k) => k in st) && st.angle > 0.2 && st.slipRecoveryTime > 0.2
+    && Math.abs(st.lateralSpeed) > 5, `açı ${(st.angle * 57.3).toFixed(0)}°, yanal ${st.lateralSpeed.toFixed(1)} m/s, toparlanma ${st.slipRecoveryTime.toFixed(2)} s`);
+  const out = {};
+  check('getDriftState(out) tahsis etmez', car.getDriftState(out) === out);
+  const calm = makeCar(tr, 0, 0, 150);
+  run(calm, tr, 1, input());
+  const sc = calm.getDriftState();
+  check('düz giderken getDriftState: drift yok, toparlanma 0', !sc.drifting && sc.slipRecoveryTime === 0 && Math.abs(sc.lateralSpeed) < 1);
+  for (const def of CARS) {
+    SPEC = def;
+    for (const kmh of [120, 200]) {
+      const c = makeCar(tr, 0, 0, kmh);
+      const v0 = c.speedKmh / 3.6;
+      const pr = c.predictDrift({ speed: v0, steer: 1, throttle: 0.6, duration: 1.5 });
+      run(c, tr, 0.1, input({ throttle: 0.6, drift: true, steer: 1 }));
+      const th0 = Math.atan2(c.velocity.x, c.velocity.z);
+      const vS = Math.hypot(c.velocity.x, c.velocity.z);
+      run(c, tr, 1.5, input({ throttle: 0.6, drift: true, steer: 1 }));
+      const turn = -Math.atan2(Math.sin(Math.atan2(c.velocity.x, c.velocity.z) - th0), Math.cos(Math.atan2(c.velocity.x, c.velocity.z) - th0));
+      const realR = vS * 1.5 / Math.abs(turn);
+      const realLoss = vS - Math.hypot(c.velocity.x, c.velocity.z);
+      check(`${def.name} @${kmh}: predictDrift yarıçap ±%25, hız kaybı ±6 m/s, yön dönüşü işareti`, Math.abs(pr.radius / realR - 1) < 0.25 && Math.abs(pr.speedLoss - realLoss) < 6 && pr.headingChange > 0,
+        `yarıçap tahmin ${pr.radius.toFixed(0)} / gerçek ${realR.toFixed(0)} m, kayıp ${pr.speedLoss.toFixed(1)} / ${realLoss.toFixed(1)} m/s, açı ${(pr.angle * 57.3).toFixed(0)}°, toparlanma ${pr.recovery.time.toFixed(2)} s`);
+    }
+  }
+  SPEC = null;
+  const lo = makeCar(tr, 0, 0, 200).predictDrift({ speed: 55, steer: 1, duration: 1.5 });
+  const hi = makeCar(tr, 0, 0, 200).predictDrift({ speed: 55, steer: -1, duration: 1.5 });
+  check('predictDrift: sağ/sol simetrik (headingChange drift yönünde pozitif)', Math.abs(lo.radius - hi.radius) < 0.5 && lo.headingChange > 0 && hi.headingChange > 0, `${lo.headingChange.toFixed(2)} / ${hi.headingChange.toFixed(2)} rad`);
 }
 
 // ---------------------------------------------------------------------------------------------
