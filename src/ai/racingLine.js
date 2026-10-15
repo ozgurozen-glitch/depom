@@ -161,7 +161,7 @@ export class RacingLine {
         if (k > mx) mx = k;
         if (k < mn) mn = k;
       }
-      kSwing[i] = mx > 4e-4 && mn < -4e-4 && mx - mn < SWING_MAX ? mx - mn : 0;
+      kSwing[i] = mx > 4e-4 && mn < -4e-4 ? mx - mn : 0;
     }
   }
 
