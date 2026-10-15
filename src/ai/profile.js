@@ -19,6 +19,7 @@ export const PROFILES = {
     lapseDur: [0.6, 1.0],
     startCalm: 25,
     attackMul: 0.5,
+    driftRate: 0.15,
     attackNeedsPin: false,
     botTarget: 0.2, // bota karşı saldırı ağırlığı (oyuncuya karşı 1)
     defend: 0.3,
@@ -54,6 +55,7 @@ export const PROFILES = {
     lapseDur: [0.6, 1.0],
     startCalm: 15,
     attackMul: 1.4,
+    driftRate: 0.45,
     attackNeedsPin: false,
     botTarget: 0.12,
     defend: 0.8,
@@ -88,6 +90,8 @@ export const PROFILES = {
     lapseDur: [0.6, 1.0],
     startCalm: 8,
     attackMul: 2.2,
+    driftRate: 0.85,
+    driftNitro: true, // drift barı doldurur: bar düşükken daha sık drift
     attackNeedsPin: true,
     botTarget: 0.06,
     defend: 1,
@@ -124,6 +128,7 @@ export const PROFILES = {
     lapseDur: [0.6, 1.0],
     startCalm: 20,
     attackMul: 1.0,
+    driftRate: 0,
     attackNeedsPin: false,
     botTarget: 0.35,
     defend: 0.45,

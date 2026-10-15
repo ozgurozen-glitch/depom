@@ -23,6 +23,23 @@ export const TUNING = {
   slopeK: 4, // hedef yanal eğim sınırı = slopeK / hız (m/s) → yüksek hızda yola göre en çok ~5° sapma
   slopeMin: 0.07,
   slopeMax: 0.3,
+  driftRecoverThrottle: 0.6,
+  driftKStart: 1 / 220, // virajın başladığını sayan eğrilik
+  driftKEnd: 1 / 400,
+  driftMinPsi: 0.7, // rad: en az bu kadar dönüşlü viraj
+  driftMinR: 18,
+  driftMaxR: 150,
+  driftMinTime: 0.6, // s: daha kısa drift yok (titrek görünmesin)
+  driftKp: 0.1,
+  driftCounterEnd: 0.12, // rad: kayma bunun altına inince karşı direksiyon biter
+  driftOmegaMin: 0.65, // rad/s: giriş anında yolun dönüş hızı (v·κ) en az bu kadar
+  driftOutside: -9, // m: drift girişinde araç virajın dış yarısında olmalı
+  driftWallGap: 0.9, // m: drift sırasında bariyere bu kadar kalınca iptal
+  driftSpeedSlack: 2, // m/s
+  driftRadiusTol: 0.3, // tahmini drift yarıçapı virajınkinden en çok bu oranda sapabilir
+  driftMinSpeed: 26,
+  driftMaxSpeed: 45, // m/s: çok hızlı drift'te (açı 40°+) kayma bariyere gider
+  chicaneFactor: 0.72, // sıkı şikanda (R < ~50 m ters virajlar) viraj hızı çarpanı
   swingOmega: 0.6, // rad/s: S virajda (ters yönlü eğrilik) hız · eğrilik farkı üst sınırı
   capUnknown: 0.88, // gözlem yokken kapasite payı çarpanı (gözlem arttıkça 1'e yaklaşır)
   steerSlew: 8, // 1/s, direksiyon çıkışının en hızlı değişimi
@@ -107,9 +124,13 @@ export class BotDriver {
     this.brakeMargin = P.brakeMargin;
 
     this.input = { throttle: 0, brake: 0, steer: 0, nitro: false, drift: false };
+    this.driftCapable = typeof car.getDriftState === 'function' && typeof car.predictDrift === 'function' && P.driftRate > 0;
+    this.driftSt = { drifting: false, dir: 0, angle: 0, signedAngle: 0, angleRate: 0, lateralSpeed: 0, speed: 0, slipRecoveryTime: 0 };
+    this.driftOut = { steer: 0 };
     this.tmpPoint = { x: 0, y: 0, z: 0 };
     this.tmpTan = { x: 0, z: 0 };
     this.rampInfo = { ramp: null, dist: Infinity };
+    this.scan = { dir: 0, psi: 0, rMin: 0, length: 0, endS: 0, startDist: 0 };
     this.bandLo = new Float64Array(MAX_BANDS);
     this.bandHi = new Float64Array(MAX_BANDS);
     this.bandSpeed = new Float64Array(MAX_BANDS);
@@ -117,7 +138,7 @@ export class BotDriver {
     this.bandCount = 0;
 
     this.stats = {
-      attack: 0, defend: 0, follow: 0, swing: 0, overtake: 0, shock: 0, lapse: 0, recover: 0, drift: 0, slipTime: 0,
+      attack: 0, defend: 0, follow: 0, swing: 0, overtake: 0, shock: 0, lapse: 0, recover: 0, drift: 0, driftTime: 0, driftAbort: 0, slipTime: 0,
     };
     this.racing = false;
     this.attackTarget = null;
@@ -220,6 +241,18 @@ export class BotDriver {
     this.saveT = 0;
 
 
+    this.driftOn = false;
+    this.recDir = 0;
+    this.driftT = 0;
+    this.driftDir = 0;
+    this.driftSteer = 0;
+    this.driftEndS = 0;
+    this.driftRec = 0;
+    this.driftCool = 2;
+    this.driftCheck = 0;
+    this.driftRecT = 0;
+    this.driftKey = -1;
+    this.driftAccept = false;
     this.stuckT = 0;
     this.recoverT = 0;
     this.recoverMax = 0;
@@ -379,7 +412,7 @@ export class BotDriver {
     // sürüş (drift) sırasında gövde hız vektöründen 25-45° sapar; yönelimi yol (hız) yönünden al
     let hx = fx;
     let hz = fz;
-    if (car.drifting && vH > 5) {
+    if ((car.drifting || this.driftSt.angle > 0.06) && vH > 5) {
       hx = vx / vH;
       hz = vz / vH;
     }
@@ -438,10 +471,24 @@ export class BotDriver {
     }
     if (this.lapseT > 0 && this.lapseKind === 3) throttle *= 0.35; // gaz kesme hatası
 
-    // --- Drift: botlar sürüş (drift) yapmaz. Car'ın drift modeli gövdeyi hız vektöründen 25-45° saptırır ve çıkışta
-    // yol aniden o kadar kırılır (yüksek hızda duvar); simülasyonda drift duvar teması/wreck'i belirgin artırıyordu.
-    // Hız kazancı da yok (drift'te yol dönüş hızı normal direksiyondan düşük). Bkz. profile.drift.
-    const drift = false;
+    // --- Drift ------------------------------------------------------------------------------------------------
+    let drift = false;
+    if (this.driftCapable) {
+      const r = this.updateDrift(dt, ctx, s, lat, vF, vTarget, halfW, lim, guard, facingAway, kappaCmd, steer, si);
+      if (r && r.counter) {
+        steer = r.steer; // çıkış: karşı direksiyonla kaymayı topla
+        throttle = Math.min(throttle, TUNING.driftRecoverThrottle);
+        brake = 0;
+      } else if (r) {
+        drift = true;
+        steer = r.steer;
+        throttle = 1;
+        brake = 0;
+      } else if (this.driftSt.angle > 0.06 && !car.drifting && !car.airborne) {
+        throttle = Math.min(throttle, TUNING.driftRecoverThrottle); // kayma sönerken gazı kıs (uzatmasın)
+        brake = 0;
+      }
+    }
 
     // --- Nitro -----------------------------------------------------------------------------------------
     const nitro = this.updateNitro(dt, ctx, s, vF, aLat, capMargin, boost, slowRaw, kNear, kHere0);
@@ -478,7 +525,7 @@ export class BotDriver {
     }
 
     // direksiyon çıkışını yumuşat (salınım ve titremeye karşı)
-    const slew = TUNING.steerSlew * dt;
+    const slew = TUNING.steerSlew * dt * (this.driftSt.angle > 0.06 ? 3 : 1);
     if (drift) this.steerOut = steer; // sürüşte direksiyon doğrudan açıyı belirler
     else this.steerOut += clamp(steer - this.steerOut, -slew, slew);
 
@@ -490,6 +537,193 @@ export class BotDriver {
     this.lastThrottle = throttle;
     this.lastBrake = brake;
     return input;
+  }
+
+  /** s'den ileri bakıp yaklaşan/içinde bulunulan tek yönlü virajı tarar; this.scan'e yazar. */
+  scanCorner(s, vF) {
+    const line = this.line;
+    const sc = this.scan;
+    const step = line.ds;
+    const i0 = Math.floor(line.indexOf(s));
+    const maxStart = Math.ceil((vF * 0.5) / step);
+    let j = 0;
+    while (j <= maxStart && Math.abs(line.kappa[(i0 + j) % line.n]) < TUNING.driftKStart) j++;
+    if (j > maxStart) return false;
+    const sign = Math.sign(line.kappa[(i0 + j) % line.n]);
+    let psi = 0;
+    let kmax = 0;
+    let gap = 0;
+    let end = j;
+    for (let q = j; q < j + 220; q++) {
+      const k = line.kappa[(i0 + q) % line.n];
+      if (Math.sign(k) === sign && Math.abs(k) > TUNING.driftKEnd) {
+        psi += Math.abs(k) * step;
+        if (Math.abs(k) > kmax) kmax = Math.abs(k);
+        end = q;
+        gap = 0;
+      } else if (++gap > 4) break;
+    }
+    // hemen ardından ters yönlü sıkı viraj (S): drift çıkışı uygun değil
+    for (let q = end + 1; q < end + 16; q++) {
+      const k = line.kappa[(i0 + q) % line.n];
+      if (Math.sign(k) === -sign && Math.abs(k) > 1 / 150) return false;
+    }
+    sc.dir = sign;
+    sc.psi = psi;
+    sc.rMin = kmax > 0 ? 1 / kmax : 1e9;
+    sc.length = (end - j) * step;
+    sc.endS = s + end * step;
+    sc.startDist = j * step;
+    return true;
+  }
+
+  /** s'den endS'ye kalan yol dönüşü (rad, dir yönünde +). */
+  remainingHeading(s, endS, dir) {
+    const line = this.line;
+    const L = line.trackLength;
+    let d = endS - s;
+    d -= Math.floor(d / L) * L;
+    if (d > 400) return 0;
+    let psi = 0;
+    for (let x = 0; x < d; x += line.ds) {
+      const k = line.curvatureAt(s + x) * dir;
+      if (k > 0) psi += k * line.ds;
+    }
+    return psi;
+  }
+
+  /** Drift yöneticisi: giriş, süreç, çıkış ve güvenlik. Drift'teyken { steer } döner, aksi halde null. */
+  updateDrift(dt, ctx, s, lat, vF, vTarget, halfW, lim, guard, facingAway, kappaCmd, steer, si) {
+    const car = this.car;
+    const P = this.profile;
+    const st = this.driftSt;
+    car.getDriftState(st);
+    if (this.driftCool > 0) this.driftCool -= dt;
+    this.driftOut.counter = false;
+
+    if (!this.driftOn && this.recDir !== 0) {
+      // drift bitti ama araç hâlâ yan kayıyor: kayma yönünün tersine direksiyon, açı küçülünce hat takibine dön
+      if (st.angle < TUNING.driftCounterEnd || car.airborne || vF < 8) this.recDir = 0;
+      else {
+        this.driftOut.counter = true;
+        this.driftOut.steer = -this.recDir * clamp(st.angle / 0.35, 0.25, 1);
+        return this.driftOut;
+      }
+    }
+
+    if (this.driftOn) {
+      this.driftT += dt;
+      this.stats.driftTime += dt;
+      const dir = this.driftDir;
+      let abort = car.airborne || facingAway || st.angle > 1.0 || vF < 20 || this.driftT > 5
+        || (!car.drifting && this.driftT > 0.35) || car.wrecked || this.recoverT > 0
+        || Math.abs(lat) > halfW - (Number.isFinite(car.halfWidth) ? car.halfWidth : 1) - TUNING.driftWallGap
+        || this.nearCar(ctx, s, 9, 5.5);
+      if (!abort && this.line.nextRamp(s, 90, this.rampInfo).ramp) abort = true;
+      if (abort) {
+        this.driftWhy = (car.airborne ? 'air ' : '') + (facingAway ? 'away ' : '') + (st.angle > 1 ? 'ang ' : '') + (!car.drifting ? 'notdrifting ' : '') + (this.recoverT > 0 ? 'rec ' : '') + (this.driftT > 5 ? 'long ' : '') + (vF < 20 ? 'slow ' : '');
+        this.driftOn = false;
+        this.recDir = dir;
+        this.driftCool = 3;
+        this.stats.driftAbort++;
+        return null;
+      }
+      // çıkışta kayma kendiliğinden ek bir dönüş yapar: planlanan çıkış noktasını ona göre ayarla
+      this.driftRecT -= dt;
+      if (this.driftRecT <= 0) {
+        this.driftRecT = 0.2;
+        const pr = car.predictDrift({ speed: vF, steer: dir * this.driftSteer, throttle: 1, duration: Math.min(3, this.driftT + 0.5) });
+        this.driftRec = Math.abs(pr.recovery.turn);
+      }
+      const rem = this.remainingHeading(s, this.driftEndS, dir);
+      if (this.driftT >= TUNING.driftMinTime && rem <= this.driftRec * 0.9 + 0.03) {
+        this.driftOn = false;
+        this.recDir = dir;
+        this.driftCool = 2 + this.rng() * 2;
+        return null;
+      }
+      // hattın içinde/dışında kalmaya göre kayma açısını (direksiyon düzeyini) ayarla
+      const e = (lat - this.baseLatAt(s)) * dir; // + : virajın içine doğru
+      this.driftOut.steer = dir * clamp(this.driftSteer - TUNING.driftKp * e, 0.3, 1);
+      return this.driftOut;
+    }
+
+    // --- giriş koşulları ---
+    if (this.driftCool > 0 || car.airborne || guard > 0 || facingAway || vF < TUNING.driftMinSpeed || vF > TUNING.driftMaxSpeed || car.finished
+      || this.recoverT > 0 || this.sinceRespawn < 3 || this.attackTarget || this.otState === OT_SWING || this.defendActive
+      || this.avoidActive || st.angle > 0.05 || vF > vTarget + 6) return null;
+    this.driftCheck -= dt;
+    if (this.driftCheck > 0) return null;
+    this.driftCheck = 0.1;
+    if (!this.scanCorner(s, vF)) { this.gate = 1; return null; }
+    const sc = this.scan;
+    // şikan çıkışında (ters yönlü sıkı viraj hemen önceyse) araç hâlâ oturmadı: drift'e girme
+    for (let q = 1; q <= 12; q++) {
+      const k = this.line.curvatureAt(s - q * 5);
+      if (k * sc.dir < -1 / 150) { this.gate = 2; return null; }
+    }
+    if (Math.abs(st.lateralSpeed) > 3.5) { this.gate = 3; return null; }
+    // yol zaten yeterince dönmeye başlamış olmalı (drift hemen ~1 rad/s döner; düz yolda içeri keser)
+    if (this.line.curvatureAt(s + vF * 0.2) * sc.dir * vF < TUNING.driftOmegaMin) { this.gate = 4; return null; }
+    if (sc.psi < TUNING.driftMinPsi || sc.psi > 3.2 || sc.rMin < TUNING.driftMinR || sc.rMin > TUNING.driftMaxR) { this.gate = 5; return null; }
+    // giriş hızı virajın güvenli hızını aşmasın (drift fren yerine geçmez)
+    if (vF > this.cornerSpeed(1 / sc.rMin, this.aLatNow, this.capNow) + TUNING.driftSpeedSlack) { this.gate = 6; return null; }
+    const tArc = Math.min(2.5, (sc.length + 5) / vF);
+    if (tArc < 0.9) { this.gate = 7; return null; }
+    const key = Math.round(sc.endS / 8) * 4 + ((car.lap | 0) % 4);
+    if (key !== this.driftKey) {
+      this.driftKey = key;
+      let prob = P.driftRate;
+      if (P.driftNitro && car.nitro < 0.8) prob = Math.min(1, prob + 0.25);
+      this.driftAccept = this.rng() < prob;
+    }
+    if (!this.driftAccept) { this.gate = 8; return null; }
+    // drift virajın dışından girilmeli: içeriden girersek kayma iç bariyere gider
+    if (lat * sc.dir > -TUNING.driftOutside) { this.gate = 9; return null; }
+    if (this.line.nextRamp(s, 150, this.rampInfo).ramp || this.nearCar(ctx, s, 14, 7)) { this.gate = 10; return null; }
+    // yarıçapı virajınkine en yakın direksiyon düzeyini tahminden seç
+    let bestSt = 0;
+    let bestErr = 1e9;
+    let bestRec = 0;
+    for (let k = 0; k < 2; k++) {
+      const lv = 0.5 + 0.25 * k;
+      const pr = car.predictDrift({ speed: vF, steer: sc.dir * lv, throttle: 1, duration: tArc });
+      if (!(pr.angle < 0.85) || !(pr.speedLoss < 12)) continue;
+      const err = Math.abs(pr.radius - sc.rMin * 1.1) / sc.rMin;
+      if (err < bestErr) {
+        bestErr = err;
+        bestSt = lv;
+        bestRec = Math.abs(pr.recovery.turn);
+      }
+    }
+    if (bestSt === 0 || bestErr > TUNING.driftRadiusTol) { this.gate = 11; return null; }
+    // virajda çıkış dönüşünü de kapsayacak kadar yol kalmalı
+    if (sc.psi < bestRec + 0.15) { this.gate = 12; return null; }
+    this.driftOn = true;
+    this.driftT = 0;
+    this.driftDir = sc.dir;
+    this.driftSteer = bestSt;
+    this.driftEndS = sc.endS;
+    this.driftRec = bestRec;
+    this.driftRecT = 0.2;
+    this.stats.drift++;
+    this.driftOut.steer = sc.dir * bestSt;
+    return this.driftOut;
+  }
+
+  /** s civarında (arkada ahead*0.7, önde ahead m) yanal olarak yakın başka araba var mı? */
+  nearCar(ctx, s, ahead, lateral) {
+    const L = this.line.trackLength;
+    const cars = ctx.cars;
+    const me = this.car;
+    for (let i = 0; i < cars.length; i++) {
+      const c = cars[i];
+      if (!c || c === me || c.wrecked) continue;
+      let d = c.trackS - s;
+      d -= Math.round(d / L) * L;
+      if (d > -ahead * 0.7 && d < ahead && Math.abs(c.lateral - me.lateral) < lateral) return true;
+    }
+    return false;
   }
 
   zeroInput() {
@@ -517,6 +751,8 @@ export class BotDriver {
     this.prevBurst = -1;
     this.shockPhase = 0;
     this.recoverT = 0;
+    this.driftOn = false;
+    this.driftCool = 3;
     this.wander = 0;
     this.steerNoise = 0;
   }
@@ -647,8 +883,11 @@ export class BotDriver {
       const d = Math.max(0, j * line.ds - lead);
       const sw = line.swingAtIndex(i0 + j);
       if (sw > 0) {
-        const vs = TUNING.swingOmega / sw; // S viraj: yaw oranı ters dönecek
-        if (vs < vc) vc = vs;
+        // S viraj: yaw oranı ters dönecek. Gevşek S'de hız·eğrilik farkı sınırlanır; sıkı şikanda viraj hızı azaltılır
+        if (sw < 0.02) {
+          const vs = TUNING.swingOmega / sw;
+          if (vs < vc) vc = vs;
+        } else vc *= TUNING.chicaneFactor;
       }
       const vAllowed = Math.sqrt(vc * vc + 2 * aBrake * d);
       if (vAllowed < vT) vT = vAllowed;

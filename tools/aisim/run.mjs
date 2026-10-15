@@ -67,7 +67,12 @@ async function soloBlock(trackId) {
         model, diff, mean: mean(laps_), best: Math.min(...laps_), wallPerLap: m.wallHits / nLaps, wallHard: m.wallHard, wrecks: m.wrecks, stuck: m.stuck,
         reverse: m.reverse, top: m.topKmh, avg: (m.sumSpeed / Math.max(1, m.steps)) * 3.6, nitro: m.nitroStarts, perf: m.perfect, us: (m.driverMs / m.driverCalls) * 1000,
       };
+      row.drifts = (m.driftStarts || 0) / nLaps;
+      row.driftAvg = (m.driftDur || 0) / Math.max(1, m.driftEnds || 0);
+      row.driftWall = m.wallDrift || 0;
+      row.driftShort = m.driftShort || 0;
       rows.push(row);
+      console.log(`            drift/tur ${f1(row.drifts)}  ort süre ${f2(row.driftAvg)} s  <0.5s ${row.driftShort}  drift duvarı ${row.driftWall}`);
       console.log(`${model.padEnd(11)} ${diff.padEnd(6)}  ${f2(row.mean).padStart(9)}  ${f2(row.best).padStart(8)}  ${f1(row.wallPerLap).padStart(9)}  ${String(row.wallHard).padStart(4)}  ${String(row.wrecks).padStart(5)}  ${String(row.stuck).padStart(7)}  ${String(row.reverse).padStart(4)}  ${f1(row.top).padStart(7)}  ${f1(row.avg).padStart(7)}  ${String(row.nitro).padStart(5)}  ${String(row.perf).padStart(4)}  ${f1(row.us).padStart(7)}`);
     }
   }
@@ -137,6 +142,7 @@ if (soloAll.length && tracks.length * models.length > 1) {
       const base = soloAll.find((q) => q.trackId === r.trackId && q.model === r.model && q.diff === (diffs.includes('normal') ? 'normal' : diffs[0]));
       return r.mean / base.mean;
     });
+    console.log(`${diff.padEnd(7)} drift/tur ${f1(mean(rows.map((r) => r.drifts)))} ort süre ${f2(mean(rows.map((r) => r.driftAvg)))} drift duvarı ${rows.reduce((a, r) => a + r.driftWall, 0)} |`);
     console.log(`${diff.padEnd(7)} süre oranı ${f2(mean(ratios))} toplam ${f1(rows.reduce((a, r) => a + r.mean, 0))}  duvar/tur ${f1(mean(rows.map((r) => r.wallPerLap)))}  sert ${rows.reduce((a, r) => a + r.wallHard, 0)}  wreck ${rows.reduce((a, r) => a + r.wrecks, 0)}  takılma ${rows.reduce((a, r) => a + r.stuck, 0)}  ters ${rows.reduce((a, r) => a + r.reverse, 0)}  us/adım ${f1(mean(rows.map((r) => r.us)))}`);
   }
 }

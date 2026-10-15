@@ -11,7 +11,7 @@ const SPACING = 2; // m, örnek aralığı
 const EDGE_MARGIN = 3.0; // m, çizginin araç merkezi için kenar payı (viraj çıkışında dışa savrulma payı dahil)
 const CURV_HALF_SPAN = 3; // örnek; eğrilik ±6 m'lik üç nokta çemberinden
 const CURV_SMOOTH = 3; // örnek; eğrilik kutu filtresi yarı genişliği
-const SWING_WINDOW = 40; // m
+const SWING_WINDOW = 70; // m
 const SWING_MAX = 0.02; // 1/m: daha sıkı (R < ~100 m) ters virajlarda normal viraj hızı sınırı zaten belirleyici
 const AHEAD_WINDOW = 200; // m, ileriye bakan en büyük eğrilik penceresi
 
@@ -161,7 +161,7 @@ export class RacingLine {
         if (k > mx) mx = k;
         if (k < mn) mn = k;
       }
-      kSwing[i] = mx > 4e-4 && mn < -4e-4 && mx - mn < SWING_MAX ? mx - mn : 0;
+      kSwing[i] = mx > 4e-4 && mn < -4e-4 ? mx - mn : 0;
     }
   }
 

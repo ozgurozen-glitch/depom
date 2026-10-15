@@ -199,6 +199,7 @@ export async function runRace(opts) {
         switch (evt.type) {
           case 'wall_hit':
             m.wallHits++;
+            if (car.drifting || time - (m.lastDriftEnd ?? -9) < 1.5) m.wallDrift = (m.wallDrift || 0) + 1;
             if (evt.strength > 0.5) m.wallHard++;
             if (evt.strength > 0.5) {
               if (time - (m.lastBumpT ?? -9) < 1.2) m.wallAfterBump = (m.wallAfterBump || 0) + 1;
@@ -206,6 +207,15 @@ export async function runRace(opts) {
               else m.wallClean = (m.wallClean || 0) + 1;
             }
             if (m.incidents.length < 400) m.incidents.push({ k: evt.strength > 0.5 ? 'hard' : 'wall', str: +evt.strength.toFixed(2), s: Math.round(car.trackS), kmh: Math.round(car.speed * 3.6), t: +time.toFixed(1), lat: +car.lateral.toFixed(1) });
+            break;
+          case 'drift_start':
+            m.driftStarts = (m.driftStarts || 0) + 1;
+            break;
+          case 'drift_end':
+            m.driftDur = (m.driftDur || 0) + evt.duration;
+            m.driftEnds = (m.driftEnds || 0) + 1;
+            if (evt.duration < 0.5) m.driftShort = (m.driftShort || 0) + 1;
+            m.lastDriftEnd = time;
             break;
           case 'wreck':
             m.wrecks++;
