@@ -71,9 +71,21 @@ export const CAR_TUNING = Object.freeze({
   driftNitroRate: 0.12,
   driftReleaseGrace: 0.1,
   driftFlipTime: 0.14,
-  gripRecoverTime: 0.6, // drift çıkışında tutuşun kademeli geri gelme süresi
-  gripRecoverStart: 0.12, // çıkış anındaki tutuş çarpanı (smoothstep ile 1'e)
+  gripRecoverTime: 0.5, // drift çıkışında doğrusal tutuşun kademeli geri gelme süresi
+  gripRecoverStart: 0.45, // çıkış anındaki doğrusal tutuş çarpanı (smoothstep ile 1'e)
   yawResponseRecover: 5, // çıkışta yaw oranının hedefe yaklaşması (yawResponse'a kademeli geçer)
+
+  // Lastik doygunluğu (Pacejka benzeri): yanal kuvvet kayma açısı slideAngle'a kadar doğrusal (normal tutuş),
+  // sonra doyar ve düşer (slideTail: kuyruk oranı) → büyük kaymada araç anında yapışmaz, momentumla kayar.
+  slideAngle: 14 * DEG,
+  slideTail: 0.2,
+  slideFalloff: 6,
+  slideThrottle: 0.55, // gaz basılıysa yanal kuvvet bu oranda azalır (kayma uzar)
+  slideCounter: 0.6, // kayma yönüne karşı direksiyon yanal kuvveti bu oranda artırır (kayma kısalır)
+  slideCapStart: 0.3, // drift çıkışında doygunluk tavanının başlangıç çarpanı (kademeli artar: kuvvet sıçraması yok)
+  driftExitPathDecay: 4, // çıkışta hız vektörünün dönüş oranının sönme hızı (1/s): dönüş birden kesilmez
+  slideScrub: 0.3, // kayarken sönen yanal enerjinin ileri hıza aktarılmayan (ısıya giden) payı
+  driftThrottleAngle: 8 * DEG, // drift açısı gazla analog: (gaz - 0.6) x bu değer
 
   // Manuel gaz: gaz girdisi süzülür (basınca hızlı, bırakınca yumuşak); bırakınca motor freni + aero sürtünme
   throttleRise: 14,
@@ -172,6 +184,88 @@ function copyPose(d, s) {
 
 const _eul = new THREE.Euler(0, 0, 0, 'YXZ');
 const TAU = Math.PI * 2;
+
+// Yanal hız sönümü: doğrusal tutuş (üstel) ile lastik doygunluğunun (kayma açısına bağlı tavan) küçüğü.
+// Sonuç out.F / out.L'ye yazılır. gripMul: doğrusal tutuş çarpanı (drift çıkışı/iniş toparlanması),
+// steerSign: kayma yönüne karşı direksiyon (+) / ters (-).
+const _sl = { F: 0, L: 0 };
+function slideStep(T, F, L, dt, gripMul, capMul, thr, steerSign, out) {
+  const absF = Math.abs(F);
+  const gBase = lerp(T.gripLow, T.gripHigh, clamp(absF / T.maxSpeed, 0, 1));
+  const aL = Math.abs(L);
+  let newL = aL * Math.exp(-gBase * gripMul * dt);
+  if (absF > 1) {
+    const u = Math.atan2(aL, absF) / T.slideAngle;
+    if (u > 1) {
+      const d = u - 1;
+      const D = gBase * absF * Math.tan(T.slideAngle);
+      let cap = D * (T.slideTail + (1 - T.slideTail) / (1 + T.slideFalloff * d * d));
+      // Gaz / karşı direksiyon / çıkış rampası tavanı ayarlar; u=1'de etkisi sıfır (doğrusal rejimle süreklilik).
+      const m = capMul * (1 - T.slideThrottle * thr) * (1 + T.slideCounter * clamp(steerSign, -0.5, 1));
+      cap *= lerp(1, m, smoothstep(1, 1.5, u));
+      newL = Math.max(newL, aL - cap * dt);
+    }
+  }
+  const L2 = L < 0 ? -newL : newL;
+  // Kaybolan yanal enerjinin bir kısmı ileri hıza aktarılır (virajda hız korunur); kayarken bir kısmı ısıya gider.
+  const sp = Math.sqrt(F * F + L * L);
+  const align = sp > 0.01 ? absF / sp : 0;
+  const sinA = sp > 0.01 ? aL / sp : 0;
+  const w = T.cornerTransfer * smoothstep(0.35, 0.75, align) * (1 - T.slideScrub * smoothstep(0.17, 0.5, sinA));
+  out.F = Math.sqrt(F * F + (L * L - L2 * L2) * w) * (F >= 0 ? 1 : -1);
+  out.L = L2;
+}
+
+// Drift çıkışı simülasyonu (saf): verilen F (ileri) / L (sağa yanal) hızından slip < 3° olana dek.
+function simulateRecovery(T, F0, L0, thr, counter) {
+  const dt = 1 / 30;
+  let F = F0;
+  let L = L0;
+  const sp0 = Math.hypot(F, L);
+  const th0 = Math.atan2(L, F);
+  let t = 0;
+  while (t < 3 && Math.abs(Math.atan2(L, Math.abs(F))) > 3 * DEG) {
+    const r = t / T.gripRecoverTime;
+    const gm = lerp(T.gripRecoverStart, 1, smoothstep(0, 1, r > 1 ? 1 : r));
+    slideStep(T, F, L, dt, gm, lerp(T.slideCapStart, 1, smoothstep(0, 1, r > 1 ? 1 : r)), thr, counter, _sl);
+    F = _sl.F;
+    L = _sl.L;
+    t += dt;
+  }
+  // hız vektörünün gövdeye göre dönüşü (gövde sabit varsayımıyla): kayma açısı değişimi
+  return { time: t, speedLoss: sp0 - Math.hypot(F, L), turn: th0 - Math.atan2(L, F) };
+}
+
+// Drift durum makinesi (saf; Car._stepDrift ve predictDrift ortak kullanır). s: durum, dir: ±1.
+function driftIntegrate(T, s, dir, steer, thr, vmax, aExtra, slopeA, dt) {
+  s.steerF += (steer - s.steerF) * damp(T.driftSteerRate, dt);
+  const k = clamp(s.steerF * dir, -1, 1); // +1: drift yönüne tam, -1: karşı direksiyon
+  const u = (k + 1) / 2;
+  const angleTarget = Math.max(5 * DEG, lerp(T.driftAngleMin, T.driftAngleMax, u) + T.driftThrottleAngle * (thr - 0.6));
+  const pathMag = Math.min(lerp(T.driftPathRate[0], T.driftPathRate[1], u), s.speed / T.driftMinRadius);
+  s.pathRate += (-dir * pathMag - s.pathRate) * damp(T.driftPathResponse, dt);
+  s.th = wrapAngle(s.th + s.pathRate * dt);
+
+  // Gövde açısı: süzülmüş hedef + kritik sönümlü yay (analitik, dt'den bağımsız kararlı).
+  const sT = dir * angleTarget;
+  s.slipTarget += (sT - s.slipTarget) * damp(T.driftSlipTargetRate, dt);
+  const crossing = s.slip * sT < 0; // sol↔sağ geçiş: açı sıfırdan geçecek
+  s.omega += ((crossing ? T.driftSlipOmegaFlip : T.driftSlipOmega) - s.omega) * damp(14, dt);
+  const w = s.omega;
+  const e = s.slip - s.slipTarget;
+  const c = s.slipVel + w * e;
+  const decay = Math.exp(-w * dt);
+  s.slip = s.slipTarget + (e + c * dt) * decay;
+  s.slipVel = (s.slipVel - w * c * dt) * decay;
+
+  // Hız: drift hafif yavaşlatır (açıyla orantılı, süzülmüş); gaz ve nitro iter.
+  const ang = Math.abs(s.slip);
+  let aT = -(T.driftDecelBase + T.driftDecelAngle * (ang / T.driftAngleMax)) + aExtra;
+  if (thr > 0 && s.speed < vmax) aT += T.accel * T.driftThrottleAccel * thr * (1 - (s.speed / vmax) ** T.accelExponent);
+  aT -= slopeA;
+  s.decel += (aT - s.decel) * damp(T.driftDecelResponse, dt);
+  s.speed = Math.max(0, s.speed + s.decel * dt);
+}
 
 // Kritik sönümlü yay (analitik, dt'den bağımsız kararlı, salınım yok): o[x], o[x + 'V'].
 function springStep(o, key, target, w, dt) {
@@ -606,13 +700,14 @@ export class Car {
     const slide = this.T.powerSlide * demand * Math.min(1, Math.abs(st) * 1.3) * smoothstep(8, 22, absF);
     const target = -st * maxRate * (1 + this.T.powerSlideYaw * slide / (this.T.powerSlide || 1)) * (F >= 0 ? 1 : -1);
     // Drift çıkışında tutuş ve yaw tepkisi smoothstep ile kademeli geri gelir (ani "snap" yok).
-    let grip = 0;
     let yawResp = this.T.yawResponse;
     let gripMul = 1;
+    let capMul = 1;
     if (this._gripRecover > 0) {
       this._gripRecover = Math.max(0, this._gripRecover - dt);
       const r = smoothstep(0, 1, 1 - this._gripRecover / this._gripRecoverDur);
       gripMul = lerp(this._gripRecoverStartMul, 1, r);
+      capMul = lerp(this.T.slideCapStart, 1, r);
       yawResp = lerp(this.T.yawResponseRecover, this.T.yawResponse, r);
     }
     this.yawRate += (target - this.yawRate) * damp(yawResp, dt);
@@ -626,16 +721,24 @@ export class Car {
     F = wx * s2 + wz * c2;
     L = wx * -c2 + wz * s2;
     const sf = clamp(absF / this.T.maxSpeed, 0, 1);
-    grip = lerp(this.T.gripLow, this.T.gripHigh, sf) * gripMul * (1 - slide);
-    const L2 = L * Math.exp(-grip * dt);
-    // Kaybolan yanal enerji ileri hıza aktarılır — yalnızca araba ileri yönde hareket ederken
-    // (düşük hızda yandan itilen araba ileri fırlamasın).
-    const sp = Math.sqrt(F * F + L * L);
-    const align = sp > 0.01 ? Math.abs(F) / sp : 0;
-    const w = this.T.cornerTransfer * smoothstep(0.35, 0.75, align);
-    const F2 = Math.sqrt(F * F + (L * L - L2 * L2) * w) * (F >= 0 ? 1 : -1);
+    this._thrS += (inp.throttle - this._thrS) * damp(4, dt); // gazın kayma süresine etkisi yavaş süzülür
+    slideStep(this.T, F, L, dt, gripMul * (1 - slide), capMul, this._thrS, st * (L < 0 ? -1 : 1), _sl);
+    const F2 = _sl.F;
+    const L2 = _sl.L;
     v.x = F2 * s2 + L2 * -c2;
     v.z = F2 * c2 + L2 * s2;
+    if (this._exitPath !== 0) {
+      // Drift çıkışı: hız vektörü dönüş oranıyla birkaç yüz ms daha döner (momentum yayı), sonra söner.
+      const rot = this._exitPath * dt;
+      const cr = Math.cos(rot);
+      const sr = Math.sin(rot);
+      const nx = v.x * cr + v.z * sr;
+      const nz = -v.x * sr + v.z * cr;
+      v.x = nx;
+      v.z = nz;
+      this._exitPath *= Math.exp(-this.T.driftExitPathDecay * dt);
+      if (Math.abs(this._exitPath) < 0.01) this._exitPath = 0;
+    }
     this._trackSlip(dt);
   }
 
@@ -738,6 +841,7 @@ export class Car {
     this._gripRecoverDur = this.T.gripRecoverTime;
     this._gripRecoverStartMul = this.T.gripRecoverStart;
     this._slipValid = false;
+    this._exitPath = this._pathRate;
     this.driftDir = 0;
   }
 
@@ -748,13 +852,14 @@ export class Car {
     const T = this.T;
     const v = this.velocity;
     const dir = this.driftDir;
-    let th = Math.atan2(v.x, v.z);
+    const th0 = Math.atan2(v.x, v.z);
+    const ds = this._ds;
 
     if (this._driftFresh) {
       // Girişte mevcut durumdan devam et (açı, açısal hız, dönüş oranı süreklidir).
       this._driftFresh = false;
       this._driftSteer = inp.steer;
-      this._slip = wrapAngle(th - this.yaw);
+      this._slip = wrapAngle(th0 - this.yaw);
       if (!this._slipValid) this._slipVel = 0;
       this._pathRate = this._slipValid ? this._headRate : -dir * T.driftPathRate[0];
       this._slipTarget = this._slip;
@@ -763,52 +868,102 @@ export class Car {
     }
     this._slipValid = false;
 
-    // Analog direksiyon → hedef açı ve dönüş oranı (doğrusal).
-    this._driftSteer += (inp.steer - this._driftSteer) * damp(T.driftSteerRate, dt);
-    const k = clamp(this._driftSteer * dir, -1, 1); // +1: drift yönüne tam, -1: karşı direksiyon
-    const u = (k + 1) / 2;
-    const angleTarget = lerp(T.driftAngleMin, T.driftAngleMax, u);
-    const pathMag = Math.min(lerp(T.driftPathRate[0], T.driftPathRate[1], u), hs / T.driftMinRadius);
-    this._pathRate += (-dir * pathMag - this._pathRate) * damp(T.driftPathResponse, dt);
-    th = wrapAngle(th + this._pathRate * dt);
-
-    // Gövde açısı: süzülmüş hedef + kritik sönümlü yay (analitik, dt'den bağımsız kararlı).
-    const sT = dir * angleTarget;
-    this._slipTarget += (sT - this._slipTarget) * damp(T.driftSlipTargetRate, dt);
-    const crossing = this._slip * sT < 0; // sol↔sağ geçiş: açı sıfırdan geçecek
-    const omegaT = crossing ? T.driftSlipOmegaFlip : T.driftSlipOmega;
-    this._driftOmega += (omegaT - this._driftOmega) * damp(14, dt);
-    const w = this._driftOmega;
-    const e = this._slip - this._slipTarget;
-    const c = this._slipVel + w * e;
-    const decay = Math.exp(-w * dt);
-    this._slip = this._slipTarget + (e + c * dt) * decay;
-    this._slipVel = (this._slipVel - w * c * dt) * decay;
-
-    // Hız: drift hafif yavaşlatır (açıyla orantılı, süzülmüş); nitro drift sırasında da iter.
-    const ang = Math.abs(this._slip);
-    let aT = -(T.driftDecelBase + T.driftDecelAngle * (ang / T.driftAngleMax));
-    if (this.nitroActive) {
-      const n = T.nitro[this.nitroLevel];
-      const vmax = this._currentMaxSpeed();
-      if (hs < vmax) aT += (T.accel + n.thrust) * 0.8 * (1 - (hs / vmax) ** T.accelExponent);
+    ds.th = th0;
+    ds.slip = this._slip;
+    ds.slipVel = this._slipVel;
+    ds.slipTarget = this._slipTarget;
+    ds.pathRate = this._pathRate;
+    ds.omega = this._driftOmega;
+    ds.steerF = this._driftSteer;
+    ds.decel = this._driftDecel;
+    ds.speed = hs;
+    const vmax = this._currentMaxSpeed();
+    let aExtra = -T.slopeGravity * 0 + 0;
+    if (this.nitroActive && hs < vmax) {
+      aExtra = (T.accel + T.nitro[this.nitroLevel].thrust) * 0.8 * (1 - (hs / vmax) ** T.accelExponent);
     }
-    if (inp.brake === 0 && inp.throttle > 0) {
-      const vm = this._currentMaxSpeed();
-      if (hs < vm) aT += T.accel * T.driftThrottleAccel * inp.throttle * (1 - (hs / vm) ** T.accelExponent);
-    }
-    aT -= T.slopeGravity * this._slope * 0.5;
-    this._driftDecel += (aT - this._driftDecel) * damp(T.driftDecelResponse, dt);
-    const sp = Math.max(0, hs + this._driftDecel * dt);
+    const thr = inp.brake === 0 ? inp.throttle : 0;
+    driftIntegrate(T, ds, dir, inp.steer, thr, vmax, aExtra, T.slopeGravity * this._slope * 0.5, dt);
+    this._slip = ds.slip;
+    this._slipVel = ds.slipVel;
+    this._slipTarget = ds.slipTarget;
+    this._pathRate = ds.pathRate;
+    this._driftOmega = ds.omega;
+    this._driftSteer = ds.steerF;
+    this._driftDecel = ds.decel;
     this._accelLong = lerp(this._accelLong, this._driftDecel, damp(8, dt));
 
     const yawPrev = this.yaw;
-    this.yaw = wrapAngle(th - this._slip);
+    this.yaw = wrapAngle(ds.th - ds.slip);
     this.yawRate = wrapAngle(this.yaw - yawPrev) / dt;
-    this.driftAngle = ang;
+    this.driftAngle = Math.abs(ds.slip);
 
-    v.x = Math.sin(th) * sp;
-    v.z = Math.cos(th) * sp;
+    v.x = Math.sin(ds.th) * ds.speed;
+    v.z = Math.cos(ds.th) * ds.speed;
+  }
+
+  // --- Bot / yardımcı arayüzü -----------------------------------------------------------------
+
+  // Anlık drift durumu. angle: gövde/hız açısı (rad, mutlak), signedAngle (+: hız vektörü gövdenin soluna),
+  // angleRate (rad/s, işaretli), lateralSpeed (m/s, +: gövdenin sağına), slipRecoveryTime: şimdi gaz/direksiyon
+  // bırakılırsa slip'in 3°'nin altına inme süresi (s). out verilirse içine yazılır (tahsis yok).
+  getDriftState(out = {}) {
+    const v = this.velocity;
+    const hs = Math.hypot(v.x, v.z);
+    const sinY = Math.sin(this.yaw);
+    const cosY = Math.cos(this.yaw);
+    const F = v.x * sinY + v.z * cosY;
+    const L = v.x * -cosY + v.z * sinY;
+    const slip = hs > 2 ? wrapAngle(Math.atan2(v.x, v.z) - this.yaw) : 0;
+    out.drifting = this.drifting;
+    out.dir = this.driftDir;
+    out.angle = Math.abs(slip);
+    out.signedAngle = slip;
+    out.angleRate = this.drifting ? this._slipVel : this._slipValid ? this._slipVel : 0;
+    out.lateralSpeed = L;
+    out.speed = hs;
+    out.slipRecoveryTime = Math.abs(slip) > 3 * DEG && F > 1 ? simulateRecovery(this.T, F, L, this._thr, 0).time : 0;
+    return out;
+  }
+
+  // Basit drift tahmini (araca dokunmaz): { speed (m/s), steer (-1..1; işareti drift yönü), throttle = 1,
+  // duration = 1.5 (s) }. Dönen: radius (m, ortalama), angle (rad, ulaşılan slip), headingChange (rad, drift
+  // yönünde +), speedEnd/speedLoss (m/s), entryTime (s, açının %90'a oturması), recovery { time, turn, speedLoss }
+  // (drift bittikten sonra slip sönerken hız vektörünün ek dönüşü ve hız kaybı).
+  predictDrift({ speed, steer = 1, throttle = 1, duration = 1.5 } = {}) {
+    const T = this.T;
+    const dir = steer < 0 ? -1 : 1;
+    const dt = 1 / 60;
+    const s = {
+      th: 0, slip: dir * 6 * DEG, slipVel: 0, slipTarget: dir * 6 * DEG, pathRate: -dir * T.driftPathRate[0], omega: T.driftSlipOmega,
+      steerF: steer, decel: 0, speed,
+    };
+    const vmax = T.maxSpeed * (1 + T.draftSpeedBonus * this._draftEff);
+    const target = Math.max(5 * DEG, lerp(T.driftAngleMin, T.driftAngleMax, (Math.min(1, Math.abs(steer)) + 1) / 2) + T.driftThrottleAngle * (throttle - 0.6));
+    let entry = null;
+    let t = 0;
+    let heading = 0;
+    const n = Math.max(1, Math.round(duration / dt));
+    for (let i = 0; i < n; i++) {
+      const th = s.th;
+      driftIntegrate(T, s, dir, steer, throttle, vmax, 0, 0, dt);
+      heading += wrapAngle(s.th - th);
+      t += dt;
+      if (entry === null && Math.abs(s.slip) > 0.9 * target) entry = t;
+    }
+    const F = s.speed * Math.cos(s.slip);
+    const L = -s.speed * Math.sin(s.slip);
+    const rec = simulateRecovery(T, F, L, throttle, 0);
+    const headingChange = -dir * heading;
+    return {
+      radius: Math.abs(heading) > 1e-3 ? speed * duration / Math.abs(heading) : Infinity,
+      angle: Math.abs(s.slip),
+      headingChange,
+      speedEnd: s.speed,
+      speedLoss: speed - s.speed,
+      entryTime: entry === null ? duration : entry,
+      recovery: { time: rec.time, turn: rec.turn * -dir, speedLoss: rec.speedLoss },
+    };
   }
 
   // --- Hava ----------------------------------------------------------------------------------
@@ -1343,8 +1498,11 @@ export class Car {
     this._gripRecoverStartMul = this.T.gripRecoverStart;
     this._wallLoss = 0;
     this._thr = 0;
+    this._thrS = 0;
     this._steerF = 0;
+    this._exitPath = 0;
     this._driftFresh = false;
+    this._ds = this._ds || { th: 0, slip: 0, slipVel: 0, slipTarget: 0, pathRate: 0, omega: 0, steerF: 0, decel: 0, speed: 0 };
     this._driftSteer = 0;
     this._slip = 0;
     this._slipVel = 0;

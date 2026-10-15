@@ -266,3 +266,39 @@ export class AudioSystem {
   `car.position` mesh'in konumuna takma ad (alias) **olmamalıdır**.
 - **Manuel gaz:** gaz artık otomatik değil. Input: `throttle` (gaz tuşu), `brake` (fren/geri), `drift`
   (el freni/drift tuşu, frenden ayrı), `nitro`, `steer`.
+
+## Sürüm 4: drift
+
+**Fizik özeti** (`src/car.js`, ayarlar `CAR_TUNING` / `spec.tuning`):
+- Drift'te gövde açısı (slip = hız yönü − gövde yönü) kritik sönümlü yayla hedefine yaklaşır; hedef açı direksiyonla
+  doğrusal (`driftAngleMin..Max`), gazla analog (`driftThrottleAngle · (gaz − 0.6)`). Direksiyon ve gaz süzülür,
+  yön değiştirmede (flick) açı sıfırdan yumuşak geçer. Açı/yaw hızında sıçrama yoktur.
+- Drift bitince (`drift_end`) araç yapışmaz: yanal hız, doğrusal tutuş ile **lastik doygunluğu** (Pacejka benzeri,
+  `slideAngle` üstünde yanal kuvvet düşer, `slideTail`) arasındaki küçük olanla söner. Hız vektörü gövde yönüne
+  kademeli döner (momentum yayı, `driftExitPathDecay`). Tipik 35–45° kaymadan düzelme **0.7–1.0 s**; hızlı drift'te
+  daha uzun, gaz basılıysa uzar (`slideThrottle`), kayma yönüne karşı direksiyon kısaltır (`slideCounter`, ~0.45–0.5 s).
+  Kayarken sönen yanal enerjinin bir kısmı ısıya gider (`slideScrub`): hız hafif düşer.
+
+**Bot / yardımcı arayüzü** (Car'ı değiştirmez, ayırt edici alan tahsis etmez):
+```js
+car.getDriftState(out?) → {
+  drifting: bool, dir: -1|0|1,          // dir: +1 sağa drift
+  angle: number,                        // |slip| (rad)
+  signedAngle: number,                  // + : hız vektörü gövdenin soluna
+  angleRate: number,                    // rad/s (işaretli)
+  lateralSpeed: number,                 // m/s, + : gövdenin sağına
+  speed: number,                        // yatay hız (m/s)
+  slipRecoveryTime: number,             // şimdi gaz/direksiyon bırakılsa slip < 3° olana dek (s); kayma yoksa 0
+}
+car.predictDrift({ speed /* m/s */, steer /* -1..1, işaret = drift yönü */, throttle = 1, duration = 1.5 }) → {
+  radius: number,         // ortalama dönüş yarıçapı (m)
+  angle: number,          // ulaşılan slip (rad)
+  headingChange: number,  // hız vektörünün toplam dönüşü (rad, drift yönünde +)
+  speedEnd, speedLoss,    // m/s
+  entryTime: number,      // açının hedefin %90'ına oturma süresi (s)
+  recovery: { time, turn, speedLoss }   // drift bittikten sonra: sönme süresi (s), ek hız vektörü dönüşü (rad), hız kaybı
+}
+```
+Tahmin, gerçek drift ile aynı durum makinesini (`driftIntegrate`) kullanır; test: yarıçap ±%25, hız kaybı ±6 m/s.
+Botlar drift'i `input.drift = true` + `steer` (işareti dönüş yönü) ile başlatır (`speed > driftMinSpeed`); drift
+boyunca gaz (`throttle`) hızı korur. Bitirmek için `drift = false`; çıkış sonrası `recovery.turn` kadar ek dönüş beklenmeli.

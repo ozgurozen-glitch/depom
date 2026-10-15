@@ -105,6 +105,52 @@ export function printDrift(label, r) {
     + ` flick: ${f(r.flick.toDeg, 1)}° geçiş ${f(r.flick.flipTime)} s; çıkış: slip<3° ${f(r.exit.clearTime)} s; hız kaybı ${f(r.speedLoss, 0)} km/s`);
 }
 
+// Drift çıkışı: sağa drift'te (tam direksiyon, drift açısı ~maks) kararlı hale gelince bırakılır; slip açısının
+// 3°'nin altına sönme süresi, bu sürede hız kaybı ve hız vektörünün dönüşü. thr: çıkıştaki gaz, counter: -1..1
+// (+1 = kayma yönüne karşı direksiyon, tam).
+export function measureExit(spec, kmh, { thr = 0, counter = 0 } = {}) {
+  const tr = new FlatTrack(8000);
+  const scene = new THREE.Scene();
+  const car = new Car({ scene, color: 0x1677ff, name: 'E', isPlayer: true, spec });
+  car.placeAt(new THREE.Vector3(0, 0, 0), 0);
+  car.update(DT, { throttle: 0 }, tr);
+  car.applyImpulse(new THREE.Vector3(0, 0, kmh / 3.6));
+  car.events.length = 0;
+  const dr = (steer, throttle) => ({ throttle, brake: 0, steer, nitro: false, drift: true });
+  for (let i = 0; i < 100; i++) car.update(DT, dr(i < 6 ? 0 : 1, 1), tr);
+  for (let i = 0; i < 90; i++) car.update(DT, dr(1, 1), tr);
+  const slip0 = wrap(Math.atan2(car.velocity.x, car.velocity.z) - car.yaw);
+  const th0 = Math.atan2(car.velocity.x, car.velocity.z);
+  const v0 = Math.hypot(car.velocity.x, car.velocity.z) * 3.6;
+  // Bırak: drift tuşu + direksiyon (karşı direksiyon: kayma yönüne, yani drift yönünün tersine)
+  const steer = -counter;
+  let t = 0;
+  let clear = null;
+  let prevYaw = car.yaw;
+  let prevW = 0;
+  let peakA = 0;
+  for (let i = 0; i < 240; i++) {
+    car.update(DT, { throttle: thr, brake: 0, steer, nitro: false, drift: false }, tr);
+    t += DT;
+    const w = wrap(car.yaw - prevYaw) / DT;
+    if (i > 0) peakA = Math.max(peakA, Math.abs((w - prevW) / DT));
+    prevYaw = car.yaw;
+    prevW = w;
+    const slip = wrap(Math.atan2(car.velocity.x, car.velocity.z) - car.yaw);
+    if (clear === null && Math.abs(slip) < 3 / DEG) {
+      clear = t;
+      var vEnd = Math.hypot(car.velocity.x, car.velocity.z) * 3.6;
+      var turn = wrap(Math.atan2(car.velocity.x, car.velocity.z) - th0);
+    }
+  }
+  return { slipDeg: Math.abs(slip0) * DEG, clearTime: clear, speedLoss: v0 - (vEnd ?? v0), turnDeg: Math.abs(turn ?? 0) * DEG, peakYawAcc: peakA, v0 };
+}
+
+export function printExit(label, r) {
+  const f = (x, d = 2) => (x === null || x === undefined ? '  -  ' : x.toFixed(d));
+  console.log(`     ${label.padEnd(26)} slip ${f(r.slipDeg, 1)}°  sönme ${f(r.clearTime)} s  hız kaybı ${f(r.speedLoss, 0)} km/s  yön dönüşü ${f(r.turnDeg, 0)}°  yaw α ${f(r.peakYawAcc, 1)}`);
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const ids = process.argv.slice(2);
   let defs = [null];
@@ -112,5 +158,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const { getCarDef } = await import('../../src/cars.js');
     defs = ids.map(getCarDef);
   }
-  for (const d of defs) printDrift(d ? d.id : 'varsayılan', measureDrift(d));
+  for (const d of defs) {
+    printDrift(d ? d.id : 'varsayılan', measureDrift(d));
+    console.log('  [çıkış: slip sönme]');
+    for (const kmh of [100, 200, 280]) {
+      printExit(`${kmh} km/s gazsız`, measureExit(d, kmh));
+      printExit(`${kmh} km/s gazlı`, measureExit(d, kmh, { thr: 1 }));
+      printExit(`${kmh} km/s karşı direksiyon`, measureExit(d, kmh, { counter: 1 }));
+    }
+  }
 }
