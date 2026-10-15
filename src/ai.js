@@ -651,7 +651,7 @@ export class BotDriver {
     // --- giriş koşulları ---
     if (this.driftCool > 0 || car.airborne || guard > 0 || facingAway || vF < TUNING.driftMinSpeed || vF > TUNING.driftMaxSpeed || car.finished
       || this.recoverT > 0 || this.sinceRespawn < 3 || this.attackTarget || this.otState === OT_SWING || this.defendActive
-      || this.avoidActive || st.angle > 0.05 || vF > vTarget + 2.5) return null;
+      || this.avoidActive || st.angle > 0.05 || vF > vTarget + 6) return null;
     this.driftCheck -= dt;
     if (this.driftCheck > 0) return null;
     this.driftCheck = 0.1;
